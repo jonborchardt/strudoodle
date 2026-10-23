@@ -19,3 +19,6 @@ Thumbs.db
 # Claude local settings
 .claude/settings.local.json
 temp/
+
+# evaluation corpus, built by scripts/corpus.py from public datasets (not redistributed)
+corpus/

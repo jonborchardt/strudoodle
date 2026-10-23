@@ -19,7 +19,7 @@ const flat = (s) => s.replace(/(\S+)@(\d+)/g, (_, n, k) => n + ' ~'.repeat(k - 1
 
 test('transcribe: tempo, notes on the grid, hits, key', () => {
   const r = transcribe(data, RATE);
-  assert.ok(Math.abs(r.tempo.bpm - BPM) < 3, `bpm ${r.tempo.bpm}`);
+  assert.ok(Math.abs(r.bpm - BPM) < 3, `bpm ${r.bpm} (autocorrelation ${r.tempo.bpm})`); // the autocorrelation may say 60 or 240: it is a candidate, chooseBpm decides
   assert.equal(r.events.length, 12);
   assert.deepEqual(r.events.filter((e) => e.midi != null).map((e) => e.midi), notes.map((n) => midi[n]));
   assert.match(flat(r.code), /note\("<\[a3 ~ ~ ~ c4 ~ ~ ~ e4 ~ ~ ~ a4 ~ ~ ~\] \[g4 ~ ~ ~ e4 ~ ~ ~ c4 ~ ~ ~ a3 ~ ~ ~\]>"\)/);

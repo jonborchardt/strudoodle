@@ -15,19 +15,37 @@ export function downsample(data, f) {
 }
 
 /**
- * Rectified rise of log RMS, a 20 ms window every 5 ms: a quiet hat and a loud kick count comparably. The window is
- * longer than a bass note's period (16 ms at 60 Hz); per-hop RMS read the waveform itself as three rises per note.
+ * Rectified rise of log RMS, a 50 ms window every 5 ms: a quiet hat and a loud kick count comparably. The window
+ * starts at the hop, so the rise lands on the attack. 50 ms (was 20) scored best on the AVP vocal-percussion corpus
+ * with the adaptive picker below (onset F1 .956 against .872); a per-band spectral flux (SuperFlux) was tried and
+ * read 20..30 ms late at no gain. Longer than a bass note's period, so the waveform itself is not three rises.
  */
-export function onsetStrength(data, rate) {
-  const hop = Math.max(1, Math.round(rate / 200)), win = 4 * hop, n = Math.floor(data.length / hop);
+export function onsetStrength(data, rate, { winHops = 10 } = {}) {
+  const hop = Math.max(1, Math.round(rate / 200)), n = Math.floor(data.length / hop);
+  const blk = new Float32Array(n), fine = new Float32Array(n); // energy and RMS per 5 ms block
+  for (let i = 0; i < n; i++) { let e = 0; for (let j = i * hop; j < (i + 1) * hop; j++) e += data[j] * data[j]; blk[i] = e; fine[i] = Math.sqrt(e / hop); }
+  const over = (i, k) => { let e = 0, c = 0; for (let j = i; j < Math.min(n, i + k); j++) { e += blk[j]; c++; } return c ? Math.sqrt(e / (c * hop)) : 0; };
   const env = new Float32Array(n), rms = new Float32Array(n), lg = (e) => Math.log1p(100 * e);
   let prev = 0;
   for (let i = 0; i < n; i++) {
-    let e = 0; const o = i * hop, end = Math.min(data.length, o + win);
-    for (let j = o; j < end; j++) e += data[j] * data[j];
-    e = Math.sqrt(e / (end - o)); rms[i] = e; env[i] = Math.max(0, lg(e) - lg(prev)); prev = e;
+    const e = over(i, winHops); env[i] = Math.max(0, lg(e) - lg(prev)); prev = e;
+    rms[i] = over(i, 4); // the 20 ms level the melody's consonant / breath / clap checks were set on
   }
-  return { env, rms, hop, hps: rate / hop };
+  return { env, rms, fine, hop, hps: rate / hop, winHops };
+}
+
+/**
+ * The attack behind each envelope peak: the rise peaks when the window's end first takes the attack in, so the
+ * attack sits up to a window later than the hop. It is the first 5 ms block in that window at `frac` of the
+ * window's loudest block: exact on a click, early in the rise of a soft attack (.2: the AVP corpus's onsets are then
+ * 7 ms off on average, against 30 ms at the hop itself).
+ */
+export function onsetTimes(peaks, { fine, hop, winHops }, rate, frac = .2) {
+  return peaks.map((i) => {
+    let top = 0; for (let k = i; k < Math.min(fine.length, i + winHops); k++) top = Math.max(top, fine[k]);
+    let k = i; while (k < fine.length - 1 && fine[k] < frac * top) k++;
+    return (k * hop) / rate;
+  });
 }
 
 /** Tempo of the onset-strength envelope: autocorrelation over 60..200 bpm with a mild preference for 80..160. bpm 0 when nothing periodic stands out. */
@@ -54,17 +72,24 @@ export function detectTempo(env, hps) {
   return { bpm: Math.round(((60 * hps) / lag) * 10) / 10, confidence: Math.max(0, Math.min(1, avg ? (r[bestLag] / avg - 1) / 4 : 0)) };
 }
 
-/** Onset hop indices: peaks of the smoothed envelope above a floor, at least `gapMs` apart. */
-export function detectOnsets(env, hps, { gapMs = 60, floor = .15 } = {}) {
+/**
+ * Onset hop indices: peaks of the smoothed envelope that top the local mean (±`avgMs`) by `delta` of the take's
+ * loudest rise, the highest within `preMaxMs` before them, at least `gapMs` apart (librosa's picker). The local mean
+ * is what keeps a ringing hit's decay and a noisy room from counting (a fixed floor let a long "pssh" count four
+ * times). ponytail: delta, gap and avg are the best of a sweep on the AVP corpus (56 improvisations, 28 people)
+ */
+export function detectOnsets(env, hps, { gapMs = 90, preMaxMs = 30, avgMs = 100, delta = .1 } = {}) {
   const n = env.length, s = new Float32Array(n);
-  for (let i = 0; i < n; i++) s[i] = (env[i - 1] || 0) + env[i] + (env[i + 1] || 0) + (env[i + 2] || 0); // 20 ms: a soft attack is one peak, not four
-  const sorted = Float32Array.from(s).sort(), peak = sorted[n - 1], median = sorted[n >> 1];
+  for (let i = 0; i < n; i++) s[i] = (env[i - 1] || 0) + env[i] + (env[i + 1] || 0); // 15 ms: a soft attack is one peak, not three
+  let peak = 0; for (const v of s) peak = Math.max(peak, v);
   if (!peak) return [];
-  const mad = Float32Array.from(s, (v) => Math.abs(v - median)).sort()[n >> 1]; // robust noise floor: zero for a sparse signal, the hiss level for a noisy one
-  const thr = Math.max(floor * peak, median + 3 * mad), gap = Math.round((gapMs / 1000) * hps); // ponytail: fixed thresholds, tune on real recordings
+  const pre = Math.round((preMaxMs / 1000) * hps), avg = Math.round((avgMs / 1000) * hps), gap = Math.round((gapMs / 1000) * hps);
   const out = [];
-  for (let i = 1; i < n - 1; i++) {
-    if (s[i] < thr || s[i] < s[i - 1] || s[i] < s[i + 1]) continue;
+  for (let i = 0; i < n; i++) {
+    let top = true; for (let k = Math.max(0, i - pre); k <= Math.min(n - 1, i + 1); k++) if (s[k] > s[i]) { top = false; break; }
+    if (!top) continue;
+    let m = 0, c = 0; for (let k = Math.max(0, i - avg); k <= Math.min(n - 1, i + avg); k++) { m += s[k]; c++; }
+    if (s[i] < m / c + delta * peak) continue;
     if (out.length && i - out[out.length - 1] < gap) { if (s[i] > s[out[out.length - 1]]) out[out.length - 1] = i; continue; }
     out.push(i);
   }
@@ -323,9 +348,9 @@ export function chooseBpm(events, tempo, fallback = 120) {
 
 /** The pattern a 16 kHz buffer sounds like. `events` are the notes and hits (seconds, midi or null); `code` is Strudel. With a `catalogue` (sounds.json's sounds) each drum voice plays the nearest real sample instead of a synth; with `instruments` (sounds.json's instruments) the notes play the nearest instrument instead of a triangle. */
 export function transcribe(data, rate = RATE, { fallbackBpm = 120, catalogue = null, instruments = null, bpm: fixedBpm = null } = {}) {
-  const { env, rms, hop, hps } = onsetStrength(data, rate);
+  const strength = onsetStrength(data, rate), { env, rms, hop, hps } = strength;
   const tempo = detectTempo(env, hps);
-  const onsets = detectOnsets(env, hps).map((i) => (i * hop) / rate);
+  const onsets = onsetTimes(detectOnsets(env, hps), strength, rate);
   const { track, clarity, hop: phop, frameLen } = pitchTrack(data, rate);
   const segs = segments(track, phop / rate, frameLen / rate, { clarity });
   // notes come from the pitch track (a voice slurs: no onset, just a new pitch); onsets add what it cannot see:
@@ -351,10 +376,12 @@ export function transcribe(data, rate = RATE, { fallbackBpm = 120, catalogue = n
     // ring (the pitch track right after the attack is stable: a piano), a hit as loud as the singing (a clap), or a
     // breath, which is a third to half as loud as the notes and goes
     const sung = events.filter((e) => e.midi != null).map((e) => level(e.t)).sort((a, b) => a - b), noteLevel = sung[sung.length >> 1] ?? 0;
+    const firstNote = events.find((e) => e.midi != null)?.t ?? 0;
     const fixed = [];
     for (let i = 0; i < events.length; i++) {
       const e = events[i];
       if (e.midi != null) { fixed.push(e); continue; }
+      if (e.t < firstNote && e.t < .5) continue; // the tap that started the take, the phone's click: a hit before any singing in the first half second
       const next = events.slice(i + 1).find((s) => s.midi != null);
       // a consonant runs into its vowel (the level between them stays at 4..74% of the burst on two singers' takes); a hit before a note decays to nothing first
       const continuous = (a, b) => { let min = Infinity; for (let k = Math.round(((a + .02) * rate) / hop); k < Math.round((b * rate) / hop); k++) min = Math.min(min, rms[k]); return min >= .03 * level(a); };
@@ -417,14 +444,18 @@ export function fitBpm(events, bpm) {
 export function toParts(events, bpm, key, bpmNote = '', melodic = false, instrument = null) {
   if (!events.length) return { head: '// heard nothing', defs: [], lines: [] };
   const div = 16, step = (60 / bpm) / 4;
-  const allowed = melodic ? [1, 2, 4, 8, 16] : [1, 2, 3, 4, 6, 8, 12, 16];
+  const allowed = [1, 2, 3, 4, 6, 8, 12, 16];
   const q = (x) => allowed.reduce((a, b) => (Math.abs(Math.log2(b / x)) < Math.abs(Math.log2(a / x)) ? b : a));
   const notes = [], hits = { bd: [], sd: [], hh: [] };
   let k = 0;
   events.forEach((e, i) => {
-    // a melody drifts (rubato), so gaps are rounded and accumulated; a beat keeps a clock, so the grid is absolute and
-    // a flam inside one 16th collapses into it instead of pushing everything after it a step late
-    k = melodic ? (i ? k + q(Math.max(.5, (e.t - events[i - 1].t) / step)) : 0) : Math.round((e.t - events[0].t) / step);
+    // gaps are rounded and accumulated, for a melody and a beat alike: a player drifts, and rounding each gap keeps
+    // every bar's rhythm where an absolute grid shifts the later bars by a slot (a beatboxed bar that ran 6% long
+    // came back as four different bars). A melody's gap is a musical length (dotted ones included: a voice is good
+    // to a 16th); a beat's is any count of 16ths, and a flam inside one 16th collapses into it (0)
+    const gap = i ? (e.t - events[i - 1].t) / step : 0;
+    k = !i ? 0 : melodic ? k + q(Math.max(.5, gap)) : k + Math.round(gap);
+    e.slot = k;
     const slots = e.midi != null ? notes : hits[e.voice ?? 'sd'];
     slots[k] ??= { name: e.midi != null ? nameOf(e.midi) : 'x', len: Math.max(1, Math.round(((e.end ?? e.t) - e.t) / step)) };
   });
@@ -438,7 +469,8 @@ export function toParts(events, bpm, key, bpmNote = '', melodic = false, instrum
         const s = slots[b * div + i];
         if (!s) { tokens.push('~'); i++; continue; }
         let room = 1; while (i + room < div && !slots[b * div + i + room]) room++; // a note ends at the next note, or the bar
-        const len = Math.min(s.len, room);
+        let len = Math.min(s.len, room);
+        if (melodic && len >= 3 && room - len === 1) len = room; // a 16th of silence after a held note is the breath before the next, not a rest (`e2@5 ~ g2@5 ~` read as `e2@6 g2@6`)
         tokens.push(len > 1 ? `${s.name}@${len}` : s.name); i += len;
       }
       out.push('[' + tokens.join(' ') + ']');

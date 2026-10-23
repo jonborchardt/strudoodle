@@ -20,6 +20,7 @@
   #tracks li { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid #2a2f3a; color: #cde; }
   #tracks li span { flex: 1; }
   #tracks li button { margin: 0; padding: 4px 10px; background: #3a3f4a; color: #e8e8e8; }
+  #tracks li button.on { background: #61afef; }
   details { margin-top: 12px; }
   summary { color: #9aa; cursor: pointer; }
   #log { font: 12px/1.4 ui-monospace, monospace; color: #bcc; white-space: pre-wrap; max-height: 30vh; overflow: auto; margin: 8px 0 0; }
@@ -78,13 +79,13 @@ stack(
   // A/B: one test at a time (AB.md is the ledger). The row under the buttons flips between a and b, variant() answers
   // wherever the two differ, and the choice survives relaunch. Type "a" or "b" into the log input to pick the winner;
   // the loser's code is then deleted and the next idea takes the row.
-  const AB = { id: 1, name: 'count-in', a: 'record at once', b: '4 clicks first, tempo locked to them' };
+  const AB = { id: 6, name: 're-record in place', a: 'remove and record again', b: 'long-press × to replace the track' };
   window.variant = () => localStorage['ab' + AB.id] ?? 'a';
   function renderAB() {
     el('ab').innerHTML = '';
     for (const v of ['a', 'b']) {
       const b = document.createElement('button'); b.textContent = `${v.toUpperCase()}: ${AB[v]}`; b.classList.toggle('on', variant() === v);
-      b.onclick = () => { localStorage['ab' + AB.id] = v; log(`ab ${AB.id} ${AB.name}: trying ${v}`); renderAB(); };
+      b.onclick = () => { localStorage['ab' + AB.id] = v; log(`ab ${AB.id} ${AB.name}: trying ${v}`); renderAB(); render(); };
       el('ab').append(b);
     }
     el('ab').append(`A/B ${AB.id} ${AB.name} · try both, then type a or b in the log`);
@@ -99,17 +100,26 @@ stack(
       const li = document.createElement('li'), span = document.createElement('span'), x = document.createElement('button');
       span.textContent = `${i + 1} · ${t.parts.head.replace(/^\/\/ /, '')}`; x.textContent = '×';
       x.onclick = () => { tracks.splice(i, 1); render(); };
-      li.append(span, x); el('tracks').append(li);
+      x.oncontextmenu = (e) => { if (variant() !== 'b' || recording) return; e.preventDefault(); replacing = i; listen(); }; // a long-press on Android
+      const toggle = (key, off, on) => {
+        const b = document.createElement('button'); b.textContent = t[key] ? on : off; b.classList.toggle('on', !!t[key]);
+        b.onclick = () => { t[key] = !t[key]; render(); if (playing) play(); };
+        return b;
+      };
+      li.append(span, toggle('muted', '🔊', '🔇'), toggle('solo', '🎧', '🎧'), x); el('tracks').append(li);
     });
-    if (tracks.length) el('code').value = assemble(tracks.map((t) => t.parts), tracks[0].bpm);
+    // a soloed track plays whatever its mute; any solo silences every track not soloed
+    const solo = tracks.some((t) => t.solo);
+    if (tracks.length) el('code').value = assemble(tracks.filter((t) => solo ? t.solo : !t.muted).map((t) => t.parts), tracks[0].bpm);
   }
 
   window.play = async (code) => {
     if (code != null) el('code').value = code;
-    try { await strudel.evaluate(el('code').value); status('playing'); }
+    try { await strudel.evaluate(el('code').value); status('playing'); playing = true; }
     catch (e) { status('error: ' + e.message); }
   };
-  window.stop = () => { if (recording) return finishRecording(); strudel.hush(); status('stopped'); };
+  let playing = false, replacing = null;
+  window.stop = () => { if (recording) return finishRecording(); strudel.hush(); playing = false; status('stopped'); };
 
   // The sample packs (sounds.json lists them, built by scripts/catalogue.mjs from strudle's measured packs) stream from
   // the Strudel CDN: the maps load here, each sample on first play. Retried before each Listen while it has not
@@ -169,25 +179,14 @@ stack(
     }
   }
 
-  /** Four clicks at `bpm` (the first higher), the status line counting down; resolves on the beat after the last. */
-  async function countIn(bpm) {
-    const ac = new AudioContext(), beat = 60 / bpm, t0 = ac.currentTime + .05;
-    for (let i = 0; i < 4; i++) {
-      const o = new OscillatorNode(ac, { frequency: i ? 880 : 1320 }), g = new GainNode(ac, { gain: .4 });
-      o.connect(g).connect(ac.destination); o.start(t0 + i * beat); o.stop(t0 + i * beat + .04);
-    }
-    for (let i = 4; i; i--) { status(`${i}…`); await new Promise((r) => setTimeout(r, beat * 1000)); }
-    await ac.close();
-  }
-
   /** Listen toggles: a first press starts a take, a second (or Stop) ends it and adds it as a track. */
   window.listen = async () => {
     if (recording) return finishRecording();
     strudel.hush(); // or it transcribes itself
+    const slot = replacing ?? tracks.length; replacing = null; // a re-record keeps its slot (and the first track's tempo)
     try {
       await loadPacks();
-      let bpm = tracks[0]?.bpm ?? null;
-      if (variant() === 'b') { bpm ??= 120; await countIn(bpm); }
+      const bpm = tracks[0]?.bpm ?? null;
       el('listen').textContent = 'Done'; el('listen').classList.add('on');
       const { data, rate } = await startRecording();
       status('transcribing…');
@@ -197,7 +196,7 @@ stack(
       log(`tempo ${JSON.stringify(r.tempo)} key ${JSON.stringify(r.key)} ${r.melodic ? 'melody' : 'beat'}${r.instrument ? ' on ' + r.instrument : ''}`);
       log(`events ${r.events.map((e) => `${e.t.toFixed(2)}:${e.midi ?? e.sound ?? e.voice ?? 'x'}`).join(' ')}`);
       if (!r.events.length) return status('heard nothing');
-      tracks.push(r); render();
+      tracks[slot] = r; render();
       await play();
     } catch (e) { finishRecording(); status(`listen failed: ${e.name}: ${e.message}`); }
   };

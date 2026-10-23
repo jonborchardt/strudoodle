@@ -6,12 +6,9 @@ Ideas, ordered by value: how much it helps "hum it, get a pattern" per line of c
 
 | # | idea | A | B | status |
 |---|------|---|---|--------|
-| 1 | count-in before a take | record at once | four clicks first, tempo locked to them | testing |
-| 2 | tap tempo | — | tap a button four times to set the bpm | |
-| 3 | metronome click while recording | silent | clicks through the take (the mic hears them: filtered by frequency) | |
-| 4 | downbeat from the count-in | bar 1 at the first onset | bar 1 on the beat after the count-in | |
-| 5 | solo / mute per track | — | a button per track | |
-| 6 | re-record a track in place | — | long-press × to replace | |
+| 1 | count-in before a take | record at once | four clicks first, tempo locked to them | A (no count-in) |
+| 5 | solo / mute per track | — | a button per track | B (icons: 🔊/🔇 mute, 🎧 solo) |
+| 6 | re-record a track in place | — | long-press × to replace | testing |
 | 7 | undo last remove | — | an "undo" link in the status line | |
 | 8 | session survives relaunch | — | tracks kept in localStorage | |
 | 9 | copy pattern to clipboard | — | a Copy button | |
