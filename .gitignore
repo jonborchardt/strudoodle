@@ -1,0 +1,21 @@
+# Gradle / Android
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+*.keystore
+
+# npm (web/ is only used to refresh the strudel bundle in assets)
+node_modules/
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+.DS_Store
+
+# Claude local settings
+.claude/settings.local.json
+temp/

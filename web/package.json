@@ -1,0 +1,17 @@
+{
+  "name": "strudoodle-web",
+  "private": true,
+  "type": "module",
+  "description": "Pins the strudel bundle the app ships in app/src/main/assets/www/strudel. `npm install && npm run sync` refreshes it after bumping the version here.",
+  "scripts": {
+    "sync": "node sync.mjs",
+    "serve": "npx --yes serve ../app/src/main/assets/www",
+    "fixtures": "node ../scripts/fixtures.mjs"
+  },
+  "dependencies": {
+    "@strudel/web": "1.3.0"
+  },
+  "devDependencies": {
+    "playwright-core": "1.63.0"
+  }
+}

@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>render</title>
+<!-- Headless helper for scripts/fixtures.mjs: strudel renders a pattern offline and hands back 16 kHz mono samples. Not part of the app's UI. -->
+<script src="strudel/index.js"></script>
+<script type="module">
+  import { downsample, RATE } from './listen.mjs';
+  const ready = initStrudel();
+  window.isReady = false;
+  ready.then(() => { window.isReady = true; });
+  /** Register sample maps (urls of pack jsons, each with its own `_base`) so a fixture can play real samples. */
+  window.load = async (urls, alias) => { await ready; await Promise.all(urls.map((u) => strudel.samples(u))); if (alias) strudel.aliasBank(alias); return true; };
+
+  /** Offline render of `seconds` of `code` plus `tail` seconds of silence for the last note to ring, at the scheduler's cps (0.5: `.cpm(x)` in the code is relative to it, as in the app). After strudle's renderOffline. */
+  window.render = async (code, seconds, tail = .5) => {
+    await ready;
+    const pat = await strudel.evaluate(code, false);
+    if (!pat) throw new Error('code does not evaluate');
+    const cps = 0.5, rate = 48000;
+    const ctx = new OfflineAudioContext(2, Math.ceil((seconds + tail) * rate), rate);
+    strudel.setAudioContext(ctx); strudel.resetGlobalEffects(); strudel.setSuperdoughAudioController(null);
+    await strudel.initAudio({ maxPolyphony: 128 });
+    for (const h of pat.queryArc(0, seconds * cps - 1e-6, { _cps: cps })) { // a hair short: an end on a cycle boundary let the next cycle's first event in
+      if (!h.hasOnset()) continue;
+      h.ensureObjectValue();
+      const at = h.whole.begin.valueOf() / cps;
+      await strudel.superdough(h.value, at, h.duration / cps, cps, at);
+    }
+    const buf = await ctx.startRendering(), l = buf.getChannelData(0), r = buf.getChannelData(1);
+    const mono = Float32Array.from(l, (v, i) => (v + r[i]) / 2);
+    return Array.from(downsample(mono, Math.round(rate / RATE)));
+  };
+</script>

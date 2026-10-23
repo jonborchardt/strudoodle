@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strudoodle</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; font: 16px system-ui, sans-serif; background: #1b1f2a; color: #e8e8e8; }
+  textarea { width: 100%; box-sizing: border-box; height: 32vh; font: 13px/1.4 ui-monospace, monospace; background: #0f1218; color: #f4d35e; border: 1px solid #333; border-radius: 6px; padding: 8px; }
+  button { font: inherit; padding: 12px 20px; margin: 12px 8px 0 0; border: 0; border-radius: 6px; background: #f4d35e; color: #1b1f2a; }
+  button:disabled { opacity: .4; }
+  #listen { background: #e06c75; color: #fff; }
+  #listen.on { background: #98c379; color: #1b1f2a; }
+  #ab { margin-top: 12px; padding: 8px; border: 1px dashed #3a3f4a; border-radius: 6px; color: #9aa; font-size: 14px; }
+  #ab button { margin: 0 8px 8px 0; padding: 6px 14px; background: #3a3f4a; color: #e8e8e8; }
+  #ab button.on { background: #61afef; color: #1b1f2a; }
+  #status { margin-top: 12px; color: #9aa; white-space: pre-wrap; }
+  #tracks { margin: 12px 0 0; padding: 0; list-style: none; }
+  #tracks li { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid #2a2f3a; color: #cde; }
+  #tracks li span { flex: 1; }
+  #tracks li button { margin: 0; padding: 4px 10px; background: #3a3f4a; color: #e8e8e8; }
+  details { margin-top: 12px; }
+  summary { color: #9aa; cursor: pointer; }
+  #log { font: 12px/1.4 ui-monospace, monospace; color: #bcc; white-space: pre-wrap; max-height: 30vh; overflow: auto; margin: 8px 0 0; }
+  #log .err { color: #e06c75; }
+  #log .you { color: #98c379; }
+  #log .claude { color: #61afef; }
+  #say { width: 100%; box-sizing: border-box; margin-top: 8px; padding: 8px; font: inherit; background: #0f1218; color: #e8e8e8; border: 1px solid #333; border-radius: 6px; }
+</style>
+</head>
+<body>
+<textarea id="code" spellcheck="false">// hello, strudel. synth only: no sample packs needed, works offline.
+stack(
+  note("c3 e3 g3 b3 c4 b3 g3 e3").s("triangle").decay(.15).sustain(0),
+  note("<c2 a1 f1 g1>").s("sawtooth").lpf(500),
+  s("white*4").decay(.04).sustain(0).gain(.3)
+).cpm(100)</textarea>
+<div>
+  <button id="play" disabled>Play</button>
+  <button id="stop" disabled>Stop</button>
+  <button id="listen" disabled>Listen</button>
+</div>
+<div id="ab"></div>
+<ul id="tracks"></ul>
+<div id="status">loading strudel…</div>
+<details><summary>Log</summary><pre id="log"></pre><input id="say" placeholder="type here to talk to the log (Claude reads it)"></details>
+
+<script src="strudel/index.js"></script>
+<script type="module">
+  import { transcribe, assemble, downsample, RATE } from './listen.mjs';
+
+  const el = (id) => document.getElementById(id);
+  // Every line goes three places: the Log tab, the console (logcat tag Strudoodle on the phone) and, on the phone,
+  // files/page.log through the android bridge. Errors open the tab. `kind` colours a line: err, you (typed here),
+  // claude (arrived through the inbox).
+  const lines = [];
+  window.log = (s, kind = '') => {
+    if (kind === true) kind = 'err';
+    const line = `${new Date().toISOString().slice(11, 23)} ${s}`;
+    lines.push(line);
+    const span = document.createElement('span'); span.textContent = line + '\n'; if (kind) span.className = kind;
+    el('log').append(span); el('log').scrollTop = 1e9;
+    if (kind === 'err' || kind === 'claude') el('log').parentElement.open = true;
+    (kind === 'err' ? console.error : console.log)(line);
+    window.android?.log(line);
+  };
+  window.getLog = () => lines.join('\n');
+  window.onerror = (m, src, line) => log(`${m} (${String(src).split('/').pop()}:${line})`, true);
+  window.onunhandledrejection = (e) => log(`unhandled: ${e.reason?.message ?? e.reason}`, true);
+  document.addEventListener('strudel.log', (e) => log(`[strudel] ${e.detail.message}`, e.detail.type === 'error'));
+  const status = (s) => { el('status').textContent = s; log(s, /^(error|.* failed)/.test(s)); };
+
+  // The two-way channel: what you type is logged as "you:" (Claude reads files/page.log); what Claude sends the app
+  // (an Android broadcast, see MainActivity) arrives through log(..., 'claude').
+  el('say').onkeydown = (e) => { if (e.key === 'Enter' && el('say').value.trim()) { log(`you: ${el('say').value.trim()}`, 'you'); el('say').value = ''; } };
+
+  // A/B: one test at a time (AB.md is the ledger). The row under the buttons flips between a and b, variant() answers
+  // wherever the two differ, and the choice survives relaunch. Type "a" or "b" into the log input to pick the winner;
+  // the loser's code is then deleted and the next idea takes the row.
+  const AB = { id: 1, name: 'count-in', a: 'record at once', b: '4 clicks first, tempo locked to them' };
+  window.variant = () => localStorage['ab' + AB.id] ?? 'a';
+  function renderAB() {
+    el('ab').innerHTML = '';
+    for (const v of ['a', 'b']) {
+      const b = document.createElement('button'); b.textContent = `${v.toUpperCase()}: ${AB[v]}`; b.classList.toggle('on', variant() === v);
+      b.onclick = () => { localStorage['ab' + AB.id] = v; log(`ab ${AB.id} ${AB.name}: trying ${v}`); renderAB(); };
+      el('ab').append(b);
+    }
+    el('ab').append(`A/B ${AB.id} ${AB.name} · try both, then type a or b in the log`);
+  }
+  renderAB();
+
+  // Tracks: every take is one; the pattern is all of them in one stack at the first take's tempo.
+  const tracks = [];
+  function render() {
+    el('tracks').innerHTML = '';
+    tracks.forEach((t, i) => {
+      const li = document.createElement('li'), span = document.createElement('span'), x = document.createElement('button');
+      span.textContent = `${i + 1} · ${t.parts.head.replace(/^\/\/ /, '')}`; x.textContent = '×';
+      x.onclick = () => { tracks.splice(i, 1); render(); };
+      li.append(span, x); el('tracks').append(li);
+    });
+    if (tracks.length) el('code').value = assemble(tracks.map((t) => t.parts), tracks[0].bpm);
+  }
+
+  window.play = async (code) => {
+    if (code != null) el('code').value = code;
+    try { await strudel.evaluate(el('code').value); status('playing'); }
+    catch (e) { status('error: ' + e.message); }
+  };
+  window.stop = () => { if (recording) return finishRecording(); strudel.hush(); status('stopped'); };
+
+  // The sample packs (sounds.json lists them, built by scripts/catalogue.mjs from strudle's measured packs) stream from
+  // the Strudel CDN: the maps load here, each sample on first play. Retried before each Listen while it has not
+  // succeeded: an app opened while the phone dozes has no network yet. Without network the synth voices stand in.
+  let catalogue = null, sounds = null;
+  async function loadPacks() {
+    if (catalogue) return;
+    sounds ??= await fetch('sounds.json').then((r) => r.json());
+    try {
+      await Promise.all(Object.values(sounds._packs).map((p) => strudel.samples(p.json, p.base)));
+      if (sounds._alias) strudel.aliasBank(sounds._alias);
+      catalogue = sounds.sounds;
+      log(`packs: ${Object.keys(sounds._packs).join(', ')} (${Object.keys(catalogue).length} sounds, ${Object.keys(sounds.instruments).length} instruments)`);
+    } catch (e) { log(`packs unavailable, synth drums until they load: ${e.message}`); }
+  }
+
+  // Recording runs until Stop (or 60 s), raw: no echo cancellation or gain riding, they eat transients.
+  let recording = null;
+  async function startRecording() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    const track = stream.getAudioTracks()[0];
+    log(`mic: ${track.label || 'unnamed'} ${JSON.stringify(track.getSettings())}`);
+    const ac = new AudioContext(), src = ac.createMediaStreamSource(stream), mute = new GainNode(ac, { gain: 0 });
+    const proc = ac.createScriptProcessor(4096, 1, 1); // ponytail: deprecated, but needs no worklet file; swap for an AudioWorklet if it drops frames
+    const chunks = [];
+    proc.onaudioprocess = (e) => chunks.push(Float32Array.from(e.inputBuffer.getChannelData(0)));
+    src.connect(proc); proc.connect(mute); mute.connect(ac.destination); // a ScriptProcessor only runs when it reaches the destination
+    let done;
+    const finished = new Promise((r) => { done = r; });
+    const started = Date.now(), tick = setInterval(() => { status(`listening… ${((Date.now() - started) / 1000).toFixed(0)}s (Stop when done)`); if (Date.now() - started > 60000) finishRecording(); }, 500);
+    recording = { finish: async () => {
+      clearInterval(tick); proc.disconnect(); src.disconnect(); stream.getTracks().forEach((t) => t.stop()); await ac.close();
+      const data = new Float32Array(chunks.reduce((n, c) => n + c.length, 0));
+      chunks.reduce((o, c) => (data.set(c, o), o + c.length), 0);
+      let peak = 0; for (const v of data) peak = Math.max(peak, Math.abs(v));
+      log(`recorded ${(data.length / ac.sampleRate).toFixed(2)}s at ${ac.sampleRate} Hz, peak ${peak.toFixed(3)}`);
+      try { saveTake(data, ac.sampleRate); } catch (e) { log(`save failed: ${e.message}`, true); } // the take still transcribes
+      done({ data, rate: ac.sampleRate });
+    } };
+    return finished;
+  }
+  function finishRecording() { const r = recording; recording = null; el('listen').textContent = 'Listen'; el('listen').classList.remove('on'); return r?.finish(); }
+
+  /** Keep the take as 16-bit WAV: files/take.wav on the phone (pull it with adb, run scripts/transcribe.mjs on it), a download elsewhere. */
+  function saveTake(data, rate) {
+    const buf = new ArrayBuffer(44 + data.length * 2), dv = new DataView(buf), str = (o, s) => [...s].forEach((c, i) => dv.setUint8(o + i, c.charCodeAt(0)));
+    str(0, 'RIFF'); dv.setUint32(4, 36 + data.length * 2, true); str(8, 'WAVEfmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); str(36, 'data'); dv.setUint32(40, data.length * 2, true);
+    for (let i = 0; i < data.length; i++) dv.setInt16(44 + i * 2, Math.max(-1, Math.min(1, data[i])) * 32767, true);
+    const bytes = new Uint8Array(buf);
+    if (window.android) {
+      let b64 = ''; for (let i = 0; i < bytes.length; i += 30000) b64 += btoa(String.fromCharCode.apply(null, bytes.subarray(i, i + 30000))); // a multiple of 3: a chunk that is not ends in '=' mid-string, which Base64.decode rejects
+      android.save('take.wav', b64); log('saved files/take.wav');
+    } else {
+      const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' })), download: 'take.wav' });
+      a.click(); log('downloaded take.wav');
+    }
+  }
+
+  /** Four clicks at `bpm` (the first higher), the status line counting down; resolves on the beat after the last. */
+  async function countIn(bpm) {
+    const ac = new AudioContext(), beat = 60 / bpm, t0 = ac.currentTime + .05;
+    for (let i = 0; i < 4; i++) {
+      const o = new OscillatorNode(ac, { frequency: i ? 880 : 1320 }), g = new GainNode(ac, { gain: .4 });
+      o.connect(g).connect(ac.destination); o.start(t0 + i * beat); o.stop(t0 + i * beat + .04);
+    }
+    for (let i = 4; i; i--) { status(`${i}…`); await new Promise((r) => setTimeout(r, beat * 1000)); }
+    await ac.close();
+  }
+
+  /** Listen toggles: a first press starts a take, a second (or Stop) ends it and adds it as a track. */
+  window.listen = async () => {
+    if (recording) return finishRecording();
+    strudel.hush(); // or it transcribes itself
+    try {
+      await loadPacks();
+      let bpm = tracks[0]?.bpm ?? null;
+      if (variant() === 'b') { bpm ??= 120; await countIn(bpm); }
+      el('listen').textContent = 'Done'; el('listen').classList.add('on');
+      const { data, rate } = await startRecording();
+      status('transcribing…');
+      await new Promise((r) => setTimeout(r)); // let the status paint
+      const f = Math.round(rate / RATE);
+      const r = transcribe(downsample(data, f), rate / f, { catalogue, instruments: catalogue && sounds.instruments, bpm });
+      log(`tempo ${JSON.stringify(r.tempo)} key ${JSON.stringify(r.key)} ${r.melodic ? 'melody' : 'beat'}${r.instrument ? ' on ' + r.instrument : ''}`);
+      log(`events ${r.events.map((e) => `${e.t.toFixed(2)}:${e.midi ?? e.sound ?? e.voice ?? 'x'}`).join(' ')}`);
+      if (!r.events.length) return status('heard nothing');
+      tracks.push(r); render();
+      await play();
+    } catch (e) { finishRecording(); status(`listen failed: ${e.name}: ${e.message}`); }
+  };
+
+  // sync: false (the default) clocks the scheduler with setInterval on this thread; the sync: true clock is a
+  // SharedWorker, which Android WebView does not have.
+  const ready = initStrudel({ onEvalError: (e) => status('error: ' + e.message), prebake: loadPacks });
+  ready.then(() => {
+    el('play').disabled = el('stop').disabled = el('listen').disabled = false;
+    el('play').onclick = () => play();
+    el('stop').onclick = stop;
+    el('listen').onclick = listen;
+    status('ready');
+  }, (e) => status('init failed: ' + e.message));
+</script>
+</body>
+</html>
