@@ -10,15 +10,30 @@
   textarea { width: 100%; box-sizing: border-box; height: 32vh; font: 13px/1.4 ui-monospace, monospace; background: #0f1218; color: #f4d35e; border: 1px solid #333; border-radius: 6px; padding: 8px; }
   button { font: inherit; padding: 12px 20px; margin: 12px 8px 0 0; border: 0; border-radius: 6px; background: #f4d35e; color: #1b1f2a; }
   button:disabled { opacity: .4; }
-  #listen { background: #e06c75; color: #fff; }
-  #listen.on { background: #98c379; color: #1b1f2a; }
+  #editor { position: relative; }
+  #corner { position: absolute; top: 6px; right: 6px; }
+  #corner button { margin: 0 0 0 6px; padding: 4px 10px; font-size: 13px; background: #3a3f4a; color: #e8e8e8; opacity: .85; }
+  #listen { background: #e06c75; color: #fff; }  #listen.on { background: #98c379; color: #1b1f2a; }
   #ab { margin-top: 12px; padding: 8px; border: 1px dashed #3a3f4a; border-radius: 6px; color: #9aa; font-size: 14px; }
   #ab button { margin: 0 8px 8px 0; padding: 6px 14px; background: #3a3f4a; color: #e8e8e8; }
   #ab button.on { background: #61afef; color: #1b1f2a; }
   #status { margin-top: 12px; color: #9aa; white-space: pre-wrap; }
+  #meter { margin-top: 6px; height: 10px; background: #0f1218; border-radius: 5px; overflow: hidden; }
+  #meter[hidden] { display: none; }
+  #rec { position: fixed; top: 12px; right: 12px; padding: 8px 14px 8px 34px; border-radius: 20px; background: #e06c75; color: #fff; font-weight: bold; }
+  #rec::before { content: ''; position: absolute; left: 12px; top: 50%; width: 14px; height: 14px; margin-top: -7px; border-radius: 50%; background: #fff; animation: rec 1s infinite; }
+  #rec[hidden] { display: none; }
+  @keyframes rec { 50% { opacity: .2; } }
+  #meter div { height: 100%; width: 0; transition: width .08s; }
+  .panel { width: 100%; display: flex; flex-direction: column; gap: 8px; color: #9aa; }
+  .panel input { width: 5em; padding: 6px; font: inherit; background: #0f1218; color: #e8e8e8; border: 1px solid #333; border-radius: 6px; }
   #tracks { margin: 12px 0 0; padding: 0; list-style: none; }
   #tracks li { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid #2a2f3a; color: #cde; }
+  #tracks li { flex-wrap: wrap; }
   #tracks li span { flex: 1; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .chips b { font-weight: normal; font-size: 13px; padding: 2px 8px; border-radius: 10px; background: #2a2f3a; color: #cde; }
+  #tracks li canvas { width: 100%; height: 40px; background: #0f1218; border-radius: 4px; }
   #tracks li button { margin: 0; padding: 4px 10px; background: #3a3f4a; color: #e8e8e8; }
   #tracks li button.on { background: #61afef; }
   details { margin-top: 12px; }
@@ -31,12 +46,12 @@
 </style>
 </head>
 <body>
-<textarea id="code" spellcheck="false">// hello, strudel. synth only: no sample packs needed, works offline.
+<div id="editor"><span id="corner"><button id="back" disabled>↶</button><button id="fwd" disabled>↷</button><button id="share">strudel.cc ↗</button><button id="copy">Copy</button></span><textarea id="code" spellcheck="false">// hello, strudel. synth only: no sample packs needed, works offline.
 stack(
   note("c3 e3 g3 b3 c4 b3 g3 e3").s("triangle").decay(.15).sustain(0),
   note("<c2 a1 f1 g1>").s("sawtooth").lpf(500),
   s("white*4").decay(.04).sustain(0).gain(.3)
-).cpm(100)</textarea>
+).cpm(100)</textarea></div>
 <div>
   <button id="play" disabled>Play</button>
   <button id="stop" disabled>Stop</button>
@@ -45,11 +60,13 @@ stack(
 <div id="ab"></div>
 <ul id="tracks"></ul>
 <div id="status">loading strudel…</div>
+<div id="meter" hidden><div></div></div>
+<div id="rec" hidden></div>
 <details><summary>Log</summary><pre id="log"></pre><input id="say" placeholder="type here to talk to the log (Claude reads it)"></details>
 
 <script src="strudel/index.js"></script>
 <script type="module">
-  import { transcribe, assemble, downsample, RATE } from './listen.mjs';
+  import { transcribe, assemble, downsample, RATE, MELODY_POOL, VOICES } from './listen.mjs';
 
   const el = (id) => document.getElementById(id);
   // Every line goes three places: the Log tab, the console (logcat tag Strudoodle on the phone) and, on the phone,
@@ -79,43 +96,145 @@ stack(
   // A/B: one test at a time (AB.md is the ledger). The row under the buttons flips between a and b, variant() answers
   // wherever the two differ, and the choice survives relaunch. Type "a" or "b" into the log input to pick the winner;
   // the loser's code is then deleted and the next idea takes the row.
-  const AB = { id: 6, name: 're-record in place', a: 'remove and record again', b: 'long-press × to replace the track' };
-  window.variant = () => localStorage['ab' + AB.id] ?? 'a';
+  // AB = null pauses testing: the row hides and variant() is 'a'. A test looks like
+  // { id: 45, name: 'track volume', a: 'fixed', b: 'a volume slider in each track\'s ✎ panel' }.
+  const AB = null;
+  window.variant = () => AB && localStorage['ab' + AB.id] || 'a';
   function renderAB() {
     el('ab').innerHTML = '';
+    el('ab').hidden = !AB;
+    if (!AB) return;
     for (const v of ['a', 'b']) {
       const b = document.createElement('button'); b.textContent = `${v.toUpperCase()}: ${AB[v]}`; b.classList.toggle('on', variant() === v);
       b.onclick = () => { localStorage['ab' + AB.id] = v; log(`ab ${AB.id} ${AB.name}: trying ${v}`); renderAB(); render(); };
+      // a long-press (600 ms) votes: the same "you: b" line as typing it into the log
+      let hold;
+      b.onpointerdown = () => { hold = setTimeout(() => { log(`you: ${v}`, 'you'); status(`voted ${v.toUpperCase()} for A/B ${AB.id}`); window.android?.vibrate(30); }, 600); };
+      b.onpointerup = b.onpointerleave = b.onpointercancel = () => clearTimeout(hold);
+      b.oncontextmenu = (e) => e.preventDefault();
       el('ab').append(b);
     }
-    el('ab').append(`A/B ${AB.id} ${AB.name} · try both, then type a or b in the log`);
+    el('ab').append(`A/B ${AB.id} ${AB.name} · try both, then long-press the winner`);
   }
   renderAB();
+  // a test this phone has not seen yet buzzes on launch (through Kotlin: the page may not vibrate before a tap)
+  try { if (AB && localStorage.seenAB != AB.id) { localStorage.seenAB = AB.id; window.android?.vibrate(400); log(`new A/B test ${AB.id}: ${AB.name}`, 'claude'); } } catch {}
 
   // Tracks: every take is one; the pattern is all of them in one stack at the first take's tempo.
   const tracks = [];
-  function render() {
+  try { tracks.push(...JSON.parse(localStorage.tracks ?? '[]')); } catch {}
+  /** Redraw the list and the pattern; `edited` (a remove or a toggle) also swaps the playing pattern for the new one. */
+  function render(edited = false) {
     el('tracks').innerHTML = '';
     tracks.forEach((t, i) => {
       const li = document.createElement('li'), span = document.createElement('span'), x = document.createElement('button');
-      span.textContent = `${i + 1} · ${t.parts.head.replace(/^\/\/ /, '')}`; x.textContent = '×';
-      x.onclick = () => { tracks.splice(i, 1); render(); };
-      x.oncontextmenu = (e) => { if (variant() !== 'b' || recording) return; e.preventDefault(); replacing = i; listen(); }; // a long-press on Android
+      const heard = t.parts.head.replace(/^\/\/ /, '');
+      // the head comment's fields as chips: "120 bpm · C major · 2 bars · 9 notes · steinway"
+      span.className = 'chips'; span.append(`${i + 1}`);
+      for (const f of heard.split(' · ')) span.append(Object.assign(document.createElement('b'), { textContent: f }));
+      x.textContent = '×';
+      x.onclick = () => { if (confirm(`Remove track ${i + 1}?`)) { tracks.splice(i, 1); render(true); } };
+      const redo = document.createElement('button'); redo.textContent = '🎤'; // record over this track, keeping its slot
+      redo.onclick = () => { if (!recording && confirm(`Record over track ${i + 1}?`)) { replacing = i; listen(); } };
       const toggle = (key, off, on) => {
         const b = document.createElement('button'); b.textContent = t[key] ? on : off; b.classList.toggle('on', !!t[key]);
-        b.onclick = () => { t[key] = !t[key]; render(); if (playing) play(); };
+        b.onclick = () => { t[key] = !t[key]; render(true); };
         return b;
       };
-      li.append(span, toggle('muted', '🔊', '🔇'), toggle('solo', '🎧', '🎧'), x); el('tracks').append(li);
+      const edit = document.createElement('button'); edit.textContent = '✎'; edit.classList.toggle('on', !!t.open);
+      edit.onclick = () => { t.open = !t.open; render(); };
+      li.append(span, toggle('muted', '🔊', '🔇'), toggle('solo', '🎧', '🎧'), edit, redo, x);
+      if (t.audio) { // the raw take, this launch only (too big to keep)
+        const raw = document.createElement('button'); raw.textContent = '▶'; raw.title = 'play the recording';
+        raw.onclick = () => { strudel.hush(); playing = false; const ac = new AudioContext(), b = ac.createBuffer(1, t.audio.data.length, t.audio.rate); b.copyToChannel(t.audio.data, 0); const s = new AudioBufferSourceNode(ac, { buffer: b }); s.connect(ac.destination); s.onended = () => ac.close(); s.start(); status(`playing take ${i + 1} as recorded`); };
+        span.after(raw);
+      } el('tracks').append(li);
+      if (t.open) li.append(panel(t));
     });
+    try { localStorage.tracks = JSON.stringify(tracks.map(({ parts, bpm, muted, solo, wave, ticks, roll, octave, instrument, drums, kit }) => ({ parts, bpm, muted, solo, wave, ticks, roll, octave, instrument, drums, kit }))); } catch {}
     // a soloed track plays whatever its mute; any solo silences every track not soloed
     const solo = tracks.some((t) => t.solo);
-    if (tracks.length) el('code').value = assemble(tracks.filter((t) => solo ? t.solo : !t.muted).map((t) => t.parts), tracks[0].bpm);
+    // an instrument swap and an octave shift ride on the note line (a drum line has no pitch to move); a swap also
+    // swaps the octave offset its sample file needs (see sounds.json)
+    const voice = (name) => { const off = sounds?.instruments?.[name]?.offset || 0; return `.s("${name}")${off ? `.transpose(${-off})` : ''}`; };
+    const shifted = (t) => ({ ...t.parts, lines: t.parts.lines.map((l, i) => line(t, l, i)) });
+    const line = (t, l, i) => {
+      // a kit swap puts every drum line on that machine's sample of the line's voice (bd / sd / hh)
+      if (t.kit && t.drums?.[i]) return l.replace(/^\s*(s\("[^"]*"\)|\w+)\.struct/, `  s("${t.kit}_${t.drums[i]}").struct`);
+      if (!/^\s*note\(/.test(l)) return l;
+      if (t.instrument) l = l.replace(/\.s\("[^"]*"\)(\.transpose\(-?\d+\))?/, voice(t.instrument));
+      return t.octave ? `${l}.transpose(${12 * t.octave})` : l;
+    };
+    if (tracks.length) el('code').value = assemble(tracks.filter((t) => solo ? t.solo : !t.muted).map(shifted), tracks[0].bpm);
+    else if (edited) el('code').value = '// no tracks\nsilence';
+    if (edited && playing) play();
   }
 
-  window.play = async (code) => {
+  /** A take as a canvas: its peak envelope (`wave`, 0..1) with a tick per event (`ticks`, 0..1 of the take): blue a note, red a hit. */
+  function strip(t) {
+    const c = document.createElement('canvas'), w = c.width = 600, h = c.height = 60, g = c.getContext('2d');
+    g.fillStyle = '#5c6370';
+    t.wave.forEach((p, i) => { const y = p * h / 2; g.fillRect(i * w / t.wave.length, h / 2 - y, Math.max(1, w / t.wave.length), 2 * y || 1); });
+    for (const [x, pitched] of t.ticks) { g.fillStyle = pitched ? '#61afef' : '#e06c75'; g.fillRect(x * w - 1, 0, 2, h); }
+    if (t.roll?.length) { // piano roll: a bar per note, high notes high, spread over the take's own range
+      const ms = t.roll.map((n) => n[2]), lo = Math.min(...ms) - 1, span = Math.max(...ms) + 1 - lo;
+      g.fillStyle = '#f4d35e';
+      for (const [x0, x1, m] of t.roll) g.fillRect(x0 * w, h - (m - lo) / span * h - 2, Math.max(3, (x1 - x0) * w), 4);
+    }
+    return c;
+  }
+  /** Peak of |data| in `n` slices, scaled to the take's own peak. */
+  function envelope(data, n = 300) {
+    const out = new Array(n).fill(0), k = data.length / n;
+    for (let i = 0; i < data.length; i++) { const j = Math.floor(i / k); out[j] = Math.max(out[j], Math.abs(data[i])); }
+    const top = Math.max(...out) || 1;
+    return out.map((p) => +(p / top).toFixed(2));
+  }
+
+  /** A track's edit panel (✎): its take drawn, the tempo, and whatever else edits one track. */
+  function panel(t) {
+    const div = document.createElement('div'); div.className = 'panel';
+    if (t.wave) div.append(strip(t));
+    // the stack plays at the first track's bpm, and a later take is transcribed at it: editing it moves both
+    const bpm = Object.assign(document.createElement('input'), { type: 'number', min: 30, max: 300, value: Math.round(tracks[0].bpm) });
+    bpm.onchange = () => { const v = +bpm.value; if (v >= 30 && v <= 300) { tracks[0].bpm = v; render(true); } };
+    const row = document.createElement('label'); row.append('tempo ', bpm, ' bpm (whole stack)'); div.append(row);    if (t.drums?.some(Boolean) && sounds) {
+      const kits = [...new Set(Object.keys(sounds.sounds).map((n) => n.match(/^(.*)_(bd|sd|hh)$/)?.[1]).filter(Boolean))]
+        .filter((k) => ['bd', 'sd', 'hh'].every((v) => sounds.sounds[`${k}_${v}`])).sort();
+      const pick = document.createElement('select');
+      pick.append(new Option('as heard', ''), ...kits.map((k) => new Option(k, k, false, k === t.kit)));
+      pick.onchange = () => { t.kit = pick.value || undefined; render(true); };
+      const row = document.createElement('label'); row.append('drum kit ', pick); div.append(row);
+    }
+    if (t.parts.lines.some((l) => /^\s*note\(/.test(l))) {
+      const pick = document.createElement('select'), heard = t.parts.lines.join().match(/\.s\("([^"]*)"\)\S*\.clip/)?.[1];
+      for (const n of heard && !MELODY_POOL.includes(heard) ? [heard, ...MELODY_POOL] : MELODY_POOL) pick.append(new Option(n === heard ? `${n} (heard)` : n, n, false, n === (t.instrument ?? heard)));
+      pick.onchange = () => { t.instrument = pick.value === heard ? undefined : pick.value; render(true); };
+      const row = document.createElement('label'); row.append('instrument ', pick); div.append(row);
+      const oct = document.createElement('label'), o = t.octave ?? 0, step = (d) => { const b = document.createElement('button'); b.textContent = d > 0 ? '+' : '−'; b.onclick = () => { t.octave = o + d; render(true); }; return b; };
+      oct.append('octave ', step(-1), ` ${o > 0 ? '+' : ''}${o} `, step(1)); div.append(oct);
+      oct.querySelectorAll('button').forEach((b) => b.style.margin = '0 4px');
+    }
+    return div;
+  }
+
+  render();
+  // Copy selects the whole textarea as it copies, so what went to the clipboard is what lights up.
+  el('copy').onclick = () => { el('code').select(); navigator.clipboard.writeText(el('code').value).then(() => status('pattern copied'), (e) => status(`copy failed: ${e.message}`)); };
+  // strudel.cc reads a pattern from the url hash: base64 of its UTF-8, url-encoded (strudel's code2hash). Kotlin sends it to the browser.
+  el('share').onclick = () => { location.href = 'https://strudel.cc/#' + encodeURIComponent(btoa(String.fromCharCode(...new TextEncoder().encode(el('code').value)))); };
+
+  // History: the last ten patterns that played, ↶ / ↷ in the pattern box step through them (and play the one reached).
+  const history = []; let at = -1;
+  const step = (d) => { if (history[at + d] == null) return; at += d; el('code').value = history[at]; play(undefined, true); };
+  el('back').onclick = () => step(-1); el('fwd').onclick = () => step(1);
+  window.play = async (code, fromHistory = false) => {
     if (code != null) el('code').value = code;
-    try { await strudel.evaluate(el('code').value); status('playing'); playing = true; }
+    try {
+      await strudel.evaluate(el('code').value); status('playing'); playing = true;
+      if (!fromHistory && history[at] !== el('code').value) { history.splice(at + 1, Infinity, el('code').value); history.splice(0, history.length - 10); at = history.length - 1; }
+      el('back').disabled = at <= 0; el('fwd').disabled = at >= history.length - 1;
+    }
     catch (e) { status('error: ' + e.message); }
   };
   let playing = false, replacing = null;
@@ -144,14 +263,24 @@ stack(
     log(`mic: ${track.label || 'unnamed'} ${JSON.stringify(track.getSettings())}`);
     const ac = new AudioContext(), src = ac.createMediaStreamSource(stream), mute = new GainNode(ac, { gain: 0 });
     const proc = ac.createScriptProcessor(4096, 1, 1); // ponytail: deprecated, but needs no worklet file; swap for an AudioWorklet if it drops frames
-    const chunks = [];
-    proc.onaudioprocess = (e) => chunks.push(Float32Array.from(e.inputBuffer.getChannelData(0)));
+    const chunks = [];    const meter = el('meter');
+    meter.hidden = false; el('rec').hidden = false; el('rec').textContent = '';
+    window.android?.awake(true); // a long take must not dim or lock the screen
+    proc.onaudioprocess = (e) => {
+      const c = Float32Array.from(e.inputBuffer.getChannelData(0)); chunks.push(c);
+      { let p = 0; for (const v of c) p = Math.max(p, Math.abs(v));        meter.firstChild.style.width = `${Math.max(0, 100 + 100 / 60 * 20 * Math.log10(p || 1e-9))}%`; meter.firstChild.style.background = p > .98 ? '#e06c75' : '#98c379'; } // −60..0 dB; red: clipping
+    };
     src.connect(proc); proc.connect(mute); mute.connect(ac.destination); // a ScriptProcessor only runs when it reaches the destination
     let done;
     const finished = new Promise((r) => { done = r; });
-    const started = Date.now(), tick = setInterval(() => { status(`listening… ${((Date.now() - started) / 1000).toFixed(0)}s (Stop when done)`); if (Date.now() - started > 60000) finishRecording(); }, 500);
+    const started = Date.now(), tick = setInterval(() => {
+      const s = (Date.now() - started) / 1000;
+      status(`listening… ${s.toFixed(0)}s (Stop when done)`);
+      el('rec').textContent = tracks[0] ? `bar ${Math.floor(s / (240 / tracks[0].bpm)) + 1}` : `${s.toFixed(0)}s`; // a bar is four beats
+      if (Date.now() - started > 60000) finishRecording();
+    }, 500);
     recording = { finish: async () => {
-      clearInterval(tick); proc.disconnect(); src.disconnect(); stream.getTracks().forEach((t) => t.stop()); await ac.close();
+      clearInterval(tick); el('meter').hidden = el('rec').hidden = true; window.android?.awake(false); proc.disconnect(); src.disconnect(); stream.getTracks().forEach((t) => t.stop()); await ac.close();
       const data = new Float32Array(chunks.reduce((n, c) => n + c.length, 0));
       chunks.reduce((o, c) => (data.set(c, o), o + c.length), 0);
       let peak = 0; for (const v of data) peak = Math.max(peak, Math.abs(v));
@@ -182,7 +311,7 @@ stack(
   /** Listen toggles: a first press starts a take, a second (or Stop) ends it and adds it as a track. */
   window.listen = async () => {
     if (recording) return finishRecording();
-    strudel.hush(); // or it transcribes itself
+    strudel.hush(); playing = false; // or it transcribes itself
     const slot = replacing ?? tracks.length; replacing = null; // a re-record keeps its slot (and the first track's tempo)
     try {
       await loadPacks();
@@ -195,9 +324,18 @@ stack(
       const r = transcribe(downsample(data, f), rate / f, { catalogue, instruments: catalogue && sounds.instruments, bpm });
       log(`tempo ${JSON.stringify(r.tempo)} key ${JSON.stringify(r.key)} ${r.melodic ? 'melody' : 'beat'}${r.instrument ? ' on ' + r.instrument : ''}`);
       log(`events ${r.events.map((e) => `${e.t.toFixed(2)}:${e.midi ?? e.sound ?? e.voice ?? 'x'}`).join(' ')}`);
-      if (!r.events.length) return status('heard nothing');
+      // a level warning after the take: clipping flattens transients, a whisper is below the onset floor
+      let peak = 0; for (const v of data) peak = Math.max(peak, Math.abs(v));
+      const level = peak > .99 ? ' · clipped: back off the mic' : peak < .05 ? ' · very quiet: come closer or sing louder' : ''; // ponytail: fixed levels
+      if (!r.events.length) return status('heard nothing' + level);
+      const secs = data.length / rate;
+      Object.assign(r, { audio: { data, rate }, wave: envelope(data), ticks: r.events.map((e) => [+(e.t / secs).toFixed(4), e.midi != null]),
+        // each line's drum voice, in toParts' order (one line per voice heard, VOICES order, then the note line)
+        drums: [...Object.keys(VOICES).filter((v) => r.events.some((e) => e.voice === v)), ...r.parts.lines.map(() => null)].slice(0, r.parts.lines.length),
+        roll: r.events.filter((e) => e.midi != null).map((e) => [+(e.t / secs).toFixed(4), +((e.end ?? e.t + .1) / secs).toFixed(4), Math.round(e.midi)]) });
       tracks[slot] = r; render();
       await play();
+      if (level) status('playing' + level);
     } catch (e) { finishRecording(); status(`listen failed: ${e.name}: ${e.message}`); }
   };
 

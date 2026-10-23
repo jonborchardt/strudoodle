@@ -110,6 +110,10 @@ export function yin(frame, rate, { fmin = 60, fmax = 1500, threshold = .25 } = {
   let tau = -1;
   for (let t = tauMin; t <= tauMax; t++) if (cmnd[t] < threshold) { while (t + 1 <= tauMax && cmnd[t + 1] < cmnd[t]) t++; tau = t; break; }
   if (tau < 0) return null;
+  // an octave up is the one error the first dip makes: at a sung syllable's consonant the fundamental is weak and the
+  // half period dips under the threshold first. Take the double period only when its dip is clearly deeper (.1): a
+  // vibrato note's two dips differ by .04, and that rule read it an octave low
+  if (2 * tau + 2 <= tauMax) { let t2 = 2 * tau; for (let t = 2 * tau - 2; t <= 2 * tau + 2; t++) if (cmnd[t] < cmnd[t2]) t2 = t; if (cmnd[t2] < cmnd[tau] - .1) tau = t2; }
   // no "prefer the double period when its dip is deeper" step: on a vibrato note the first dip sits at .04 and the
   // double period at .00 and it reads an octave low. A sung scale, a sax and a piano all read true without it.
   const a = cmnd[tau - 1], b = cmnd[tau], c = tau + 1 <= tauMax ? cmnd[tau + 1] : b, den = a - 2 * b + c;
@@ -132,9 +136,6 @@ function fft(re, im) { // in-place radix-2 (strudle's lib/analyze.mjs)
   }
 }
 
-/** Spectral centroid in Hz of the 40 ms from `t`. */
-export const centroidAt = (data, rate, t) => hitFeatures(data, rate, t, t + .04).centroid;
-
 /**
  * What a hit is made of, the way strudle measures its packs (lib/hitwords.mjs): centroid, the shares of energy under
  * 150 Hz and over 5 kHz, spectral flatness, and decay in ms from the peak to -30 dB. Spectrum over the first 100 ms
@@ -144,72 +145,123 @@ export function hitFeatures(data, rate, t, until = t + .6) {
   const o = Math.round(t * rate), n = 2048, w = Math.min(n, Math.round(Math.min(.1, until - t) * rate)), re = new Float64Array(n), im = new Float64Array(n);
   for (let k = 0; k < w && o + k < data.length; k++) re[k] = data[o + k] * (.5 - .5 * Math.cos((2 * Math.PI * k) / w));
   fft(re, im);
+  const edges = [0, 200, 600, 1500, 3000, 5000, 8000], bands = new Array(6).fill(0);
   let tot = 0, cen = 0, low = 0, high = 0, logSum = 0, bins = 0;
   for (let k = 1; k < n / 2; k++) {
     const hz = (k * rate) / n, m = re[k] * re[k] + im[k] * im[k];
     tot += m; cen += hz * m; if (hz < 150) low += m; if (hz > 5000) high += m; logSum += Math.log(m + 1e-20); bins++;
+    for (let b = 0; b < 6; b++) if (hz >= edges[b] && hz < edges[b + 1]) bands[b] += m;
   }
   const flat = tot ? Math.exp(logSum / bins) / (tot / bins) : 0;
-  // decay: peak of a 5 ms max-envelope, then the first block under -30 dB
-  const blk = Math.max(1, Math.round(rate * .005)), end = Math.min(data.length, Math.round(until * rate));
+  // decay: peak of a 5 ms max-envelope, then the first block under -30 dB; attack: ms to 90% of the peak; tcent: the envelope's energy-weighted mean time
+  const blk = Math.max(1, Math.round(rate * .005)), end = Math.min(data.length, Math.round(until * rate)), env = [];
   let peak = 0, at = o;
-  for (let i = o; i + blk <= end; i += blk) { let m = 0; for (let j = i; j < i + blk; j++) m = Math.max(m, Math.abs(data[j])); if (m > peak) { peak = m; at = i; } }
+  for (let i = o; i + blk <= end; i += blk) { let m = 0; for (let j = i; j < i + blk; j++) m = Math.max(m, Math.abs(data[j])); env.push(m); if (m > peak) { peak = m; at = i; } }
   let dec = end;
   for (let i = at; i + blk <= end; i += blk) { let m = 0; for (let j = i; j < i + blk; j++) m = Math.max(m, Math.abs(data[j])); if (m < peak * 10 ** (-30 / 20)) { dec = i; break; } }
-  return { centroid: tot ? cen / tot : 0, low: tot ? low / tot : 0, high: tot ? high / tot : 0, flat, decay: ((dec - at) / rate) * 1000 };
+  const attack = Math.max(0, env.findIndex((v) => v >= .9 * Math.max(1e-9, peak))) * 5;
+  let te = 0, tw = 0; env.forEach((v, i) => { te += v * v * i; tw += v * v; });
+  let zcr = 0; for (let i = o + 1; i < Math.min(data.length, o + Math.round(.05 * rate)); i++) if ((data[i] >= 0) !== (data[i - 1] >= 0)) zcr++; // sign changes in the first 50 ms
+  const p = o + Math.round(.01 * rate) + 1024 + Math.floor(rate / 60) <= data.length ? yin(data.subarray(o + Math.round(.01 * rate), o + Math.round(.01 * rate) + 1024 + Math.floor(rate / 60)), rate) : null; // a drum machine's kick rings a pitch, a lip pop does not
+  return { centroid: tot ? cen / tot : 0, low: tot ? low / tot : 0, high: tot ? high / tot : 0, flat, decay: ((dec - at) / rate) * 1000,
+    bands: bands.map((b) => Math.log((tot ? b / tot : 0) + 1e-4)), zcr, attack: Math.log(attack + 1), tcent: Math.log((tw ? (te / tw) * 5 : 0) + 1), clarity: p ? p.clarity : 0, pitch: p ? Math.log(p.hz) : 0 }; // the log forms the voice model was trained on
 }
 
 /** strudle's voice words (from a sample's name) folded to the three kinds the clusters have; absent: the name says nothing. */
 export const KIND = { bd: 'bd', lt: 'bd', sd: 'sd', cp: 'sd', rim: 'sd', mt: 'sd', ht: 'sd', cb: 'sd', hh: 'hh', oh: 'hh', rd: 'hh', cr: 'hh' };
 
-/** The catalogue sound nearest a set of features (weighted distance in the units strudle's words use); with a `kind`, only sounds whose name says that kind. ponytail: hand-set scales */
-export function nearestSound(f, catalogue, kind) {
-  const d = (g) => ((Math.log2(Math.max(50, f.centroid) / Math.max(50, g.centroid)) / .5) ** 2 + ((f.low - g.low) / .25) ** 2 + ((f.high - g.high) / .2) ** 2 + (Math.log2(Math.max(10, f.decay) / Math.max(10, g.decay)) / .8) ** 2 + ((f.flat - g.flat) / .15) ** 2);
+/** Distance between two hits' spectra and decay, in the units strudle's words use. ponytail: hand-set scales */
+export const soundDistance = (f, g) => (Math.log2(Math.max(50, f.centroid) / Math.max(50, g.centroid)) / .5) ** 2 + ((f.low - g.low) / .25) ** 2 + ((f.high - g.high) / .2) ** 2 + (Math.log2(Math.max(10, f.decay) / Math.max(10, g.decay)) / .8) ** 2 + ((f.flat - g.flat) / .15) ** 2;
+/** The catalogue sound nearest a set of features, `{ name, d }`; with a `kind`, only sounds whose name says that kind. */
+export function nearestSound(f, catalogue, kind = null) {
   let best = null, bestD = Infinity;
-  for (const [name, g] of Object.entries(catalogue)) { if (kind && KIND[g.voice] !== kind) continue; const x = d(g); if (x < bestD) { bestD = x; best = name; } }
-  return best ?? (kind ? nearestSound(f, catalogue, null) : null);
+  for (const [name, g] of Object.entries(catalogue)) { if (kind && KIND[g.voice] !== kind) continue; const x = soundDistance(f, g); if (x < bestD) { bestD = x; best = name; } }
+  return best ? { name: best, d: bestD } : kind ? nearestSound(f, catalogue, null) : { name: null, d: Infinity };
 }
 
-/** Give each drum cluster a real sound: the catalogue entry nearest the mean features of the cluster's hits. With two or more clusters their order says which is the kick and which the hat, and the match keeps to that kind; one cluster alone is whatever sound it is nearest. */
-export function matchSounds(events, data, rate, catalogue) {
+/** The sample words a voice may play: real kicks, snares and hats only (KIND also folds toms, cowbells, rims and cymbals into the three voices for *naming*; a cowbell playing a beatboxed snare sounded wrong). */
+export const PLAYS = { bd: ['bd'], sd: ['sd'], hh: ['hh', 'oh'] };
+/**
+ * Give each drum voice a real sound. A kit first: the machine whose kick, snare and hat together sit nearest the
+ * voices' mean features (one machine sounds like one drummer; a D110 tom, an RM50 cowbell and a Minipops hat did
+ * not); with one voice, or no machine that has them all, each voice takes the nearest sample of its kind.
+ */
+export function matchSounds(events, catalogue) {
   const byVoice = {};
-  events.forEach((e, i) => { if (e.midi == null && e.voice) (byVoice[e.voice] ??= []).push(hitFeatures(data, rate, e.t, Math.min(e.t + .6, events[i + 1]?.t ?? Infinity))); });
-  const several = Object.keys(byVoice).length > 1;
-  for (const [voice, fs] of Object.entries(byVoice)) {
+  for (const e of events) if (e.midi == null && e.voice) (byVoice[e.voice] ??= []).push(e.features);
+  const means = Object.fromEntries(Object.entries(byVoice).map(([voice, fs]) => {
     const mean = {};
     for (const k of ['centroid', 'low', 'high', 'flat', 'decay']) mean[k] = k === 'centroid' || k === 'decay' ? 2 ** (fs.reduce((s, f) => s + Math.log2(Math.max(1, f[k])), 0) / fs.length) : fs.reduce((s, f) => s + f[k], 0) / fs.length;
-    const sound = nearestSound(mean, catalogue, several ? voice : null);
-    for (const e of events) if (e.voice === voice) e.sound = sound;
+    return [voice, mean];
+  }));
+  const voices = Object.keys(means), chosen = {};
+  if (voices.length > 1) {
+    const kits = {};
+    for (const [name, g] of Object.entries(catalogue)) { const m = /^(.+)_([a-z]+)$/.exec(name); if (m && PLAYS[KIND[g.voice]]?.includes(g.voice)) (kits[m[1]] ??= {})[name] = g; }
+    let best = null, bestD = Infinity;
+    for (const [kit, samples] of Object.entries(kits)) {
+      let d = 0; const pick = {};
+      for (const v of voices) { const { name, d: dv } = nearestSound(means[v], samples, v); if (!name || !PLAYS[v].includes(samples[name].voice)) { d = Infinity; break; } d += dv; pick[v] = name; }
+      if (d < bestD) { bestD = d; best = pick; }
+    }
+    if (best) Object.assign(chosen, best);
   }
+  for (const v of voices) chosen[v] ??= nearestSound(means[v], Object.fromEntries(Object.entries(catalogue).filter(([, g]) => PLAYS[v].includes(g.voice))), null).name ?? nearestSound(means[v], catalogue, v).name;
+  for (const e of events) if (e.midi == null && e.voice) e.sound = chosen[e.voice];
 }
 
 /**
- * A drum voice per unpitched event: their log centroids clustered into up to three groups (k-means, near centres
- * merged), named low to high bd, sd, hh. Relative on purpose: a beatbox through a phone mic has no energy above 5 kHz,
- * so "a hat is bright" only holds within the take; the absolute hints only name a take with one or two kinds of hit.
+ * Kick / snare / hat from a hit's features: multinomial logistic regression on 14 of hitFeatures' numbers, fitted by
+ * scripts/hitmodel.py on the AVP corpus (9.8k hits, 28 people with no beatbox experience, phone and laptop mics).
+ * Leave-one-person-out accuracy .806, .787 on the improvisations; the centroid clustering it replaces (three groups
+ * named low to high, relative to the take) scored .567 there. Snare against hat is what it still gets wrong (a
+ * "k" snare is a hat to it a third of the time). ponytail: a linear model; a 16-unit MLP gained nothing in the sweep
  */
-export function classifyHits(events, data, rate) {
-  const hits = events.filter((e) => e.midi == null);
-  if (!hits.length) return;
-  const x = hits.map((e) => Math.log2(Math.max(50, centroidAt(data, rate, e.t))));
-  const sorted = [...x].sort((a, b) => a - b), at = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
-  let centers = [at(1 / 6), at(1 / 2), at(5 / 6)];
-  const nearest = (v) => centers.reduce((best, c, i) => (Math.abs(v - c) < Math.abs(v - centers[best]) ? i : best), 0);
-  let members;
-  for (let it = 0; it < 10; it++) {
-    members = centers.map(() => []);
-    x.forEach((v) => members[nearest(v)].push(v));
-    centers = centers.map((c, i) => (members[i].length ? members[i].reduce((a, b) => a + b, 0) / members[i].length : c));
-  }
-  centers = centers.filter((_, i) => members[i].length).sort((a, b) => a - b);
-  for (let i = 1; i < centers.length;) if (centers[i] - centers[i - 1] < .4) centers.splice(i - 1, 2, (centers[i - 1] + centers[i]) / 2); else i++; // ponytail: a fixed 1.3x merge distance
-  const LOW = Math.log2(1200), HIGH = Math.log2(3000);
-  let names = centers.length === 3 ? ['bd', 'sd', 'hh']
-    : centers.length === 2 ? [centers[0] < LOW ? 'bd' : 'sd', centers[1] > HIGH ? 'hh' : 'sd']
-    : [centers[0] < LOW ? 'bd' : centers[0] > HIGH ? 'hh' : 'sd'];
-  if (names.length === 2 && names[0] === names[1]) names = names[0] === 'bd' ? ['bd', 'sd'] : ['sd', 'hh'];
-  hits.forEach((e, i) => { e.voice = names[nearest(x[i])]; });
+export const HIT_MODEL = {
+  features: ['centroid', 'low', 'high', 'flat', 'decay', 'b0', 'b1', 'b2', 'b3', 'b4', 'b5', 'zcr', 'attack', 'tcent', 'clarity', 'pitch'],
+  classes: ['bd', 'sd', 'hh'],
+  w: [[0.083, 3.3685, 0.3552, 11.4242, 0.6085, 0.1801, 0.0685, 0.1069, -0.458, -0.0608, 0.1634, -0.0097, -0.155, -0.0927, -1.8526, 0.3433],
+    [-0.1742, -1.1818, -0.985, -9.6943, -0.198, -0.011, -0.2649, 0.4305, 0.2911, 0.0123, 0.064, 0.0052, 0.1229, -0.0768, -1.6631, 0.227],
+    [0.0912, -2.1867, 0.6298, -1.7299, -0.4105, -0.1691, 0.1964, -0.5374, 0.1669, 0.0486, -0.2274, 0.0045, 0.0321, 0.1694, 3.5158, -0.5702]],
+  b: [-1.2138, 3.9614, -2.7475],
+  lo: [5.337, 0, 0, 0, 3.832, -9.2, -8.936, -8.941, -9.019, -9.117, -9.187, 23, 0, 1.446, 0, 0],
+  hi: [8.833, 0.375, 0.989, 0.251, 6.191, -0.246, -0.041, -0.294, -0.475, -0.163, -0.011, 665, 5.17, 5.337, 0.957, 5.68],
+};
+/** hitFeatures as the model's vector (the logs it was trained on). */
+export const hitVector = (f) => [Math.log(Math.max(50, f.centroid)), f.low, f.high, f.flat, Math.log(Math.max(10, f.decay)), ...f.bands, f.zcr, f.attack, f.tcent, f.clarity, f.pitch];
+/** The model's score per class (log-odds up to a constant), features clipped to the training range first: a synthetic hit's flatness is three times any voice's, and a linear model extrapolates that into nonsense. */
+export function voiceScores(f) {
+  const x = hitVector(f).map((v, k) => Math.min(HIT_MODEL.hi[k], Math.max(HIT_MODEL.lo[k], v)));
+  return HIT_MODEL.w.map((row, c) => row.reduce((a, w, k) => a + w * x[k], HIT_MODEL.b[c]));
 }
+const argmax = (xs) => xs.reduce((b, v, i) => (v > xs[b] ? i : b), 0);
+export const voiceOf = (f) => HIT_MODEL.classes[argmax(voiceScores(f))];
+/**
+ * A drum voice per unpitched event. The model scores each hit on its own (a per-take clustering with a vote per
+ * cluster was tried and lost 5..8 points on the AVP improvisations: a centroid cluster holds more than one vocal
+ * sound). Two things on top: hits whose spectra are all but identical (the same sample twice: distance under .05 in
+ * nearestSound's metric, where two vocal hits of one kind sit at .2) share the summed vote, so one sound is one
+ * voice through a take whatever the next event does to the window; and a hit that *is* a catalogue sample (distance
+ * under .01: a drum machine played in) takes that sample's kind, which the voice model cannot know (an 808 snare's
+ * body is a 170 Hz tone, a kick to it).
+ */
+export function classifyHits(events, data, rate, catalogue = null) {
+  const hits = events.filter((e) => e.midi == null);
+  events.forEach((e, i) => { if (e.midi == null) e.features = hitFeatures(data, rate, e.t, Math.min(e.t + .6, events[i + 1]?.t ?? Infinity)); });
+  if (!hits.length) return;
+  const scores = hits.map((e) => voiceScores(e.features)), group = hits.map((_, i) => i);
+  hits.forEach((a, i) => { for (let j = 0; j < i; j++) if (group[j] === j && soundDistance(a.features, hits[j].features) < SAME) { group[i] = j; break; } });
+  const groups = [...new Set(group)].map((g) => hits.map((_, i) => i).filter((i) => group[i] === g));
+  const names = groups.map((g) => HIT_MODEL.classes[argmax(g.reduce((s, i) => s.map((v, c) => v + scores[i][c]), [0, 0, 0]))]);
+  // a kit: exactly three sounds, each repeated, is a kick, a snare and a hat by brightness when the votes collide (a synth snare is a flat burst, a kick to the voice model); a voice's hits never group so tightly
+  if (groups.length === 3 && groups.every((g) => g.length > 1) && new Set(names).size < 3) {
+    const order = groups.map((g, k) => [hits[g[0]].features.centroid, k]).sort((a, b) => a[0] - b[0]);
+    order.forEach(([, k], rank) => { names[k] = ['bd', 'sd', 'hh'][rank]; });
+  }
+  groups.forEach((g, k) => g.forEach((i) => { hits[i].voice = names[k]; }));
+  if (catalogue) for (const e of hits) { const { name, d } = nearestSound(e.features, catalogue); if (d < .01 && KIND[catalogue[name].voice]) e.voice = KIND[catalogue[name].voice]; }
+}
+const SAME = .25; // ponytail: the grouping radius, from the fixtures' identical hits (.18 apart when the next event cuts the window short) and the corpus (no loss up to here)
 
 /**
  * What a sustained note is made of, for telling a piano from a sax from a voice: brightness (centroid over the
@@ -311,10 +363,14 @@ export function segments(track, secPerFrame, frameSec, { minFrames = 6, tol = .7
   const out = [];
   let cur = null, pending = [];
   const close = (i) => { if (cur) { cur.end = i * secPerFrame; cur.clarity = clarity ? Array.from({ length: i - cur.start }, (_, k) => clarity[cur.start + k] || 0).reduce((a, b) => a + b, 0) / (i - cur.start) : 1; out.push(cur); } cur = null; };
-  const open = (i, vals) => { cur = { start: i, sum: vals.reduce((a, b) => a + b, 0), n: vals.length }; };
+  const open = (i, vals) => { cur = { start: i, vals: [...vals] }; };
+  // a frame continues the note when it sits within `tol` of the last three frames, not of the note's mean: a singer
+  // scoops into a note over 300 ms (1.5 semitones on the user's takes) and the mean rule wrote every note twice; a
+  // new note is a jump. The note's pitch is then the median, which the scoop does not pull down
+  const recent = () => { const v = cur.vals.slice(-3); return v.reduce((a, b) => a + b, 0) / v.length; };
   for (let i = 0; i <= track.length; i++) {
     const v = track[i] ?? null;
-    if (v != null && cur && Math.abs(v - cur.sum / cur.n) <= tol) { cur.sum += v; cur.n++; pending = []; continue; }
+    if (v != null && cur && Math.abs(v - recent()) <= tol) { cur.vals.push(v); pending = []; continue; }
     pending.push(v);
     if (pending.length < minFrames && i < track.length) continue;
     // minFrames of something else: silence, a new note, or noise (frames that do not agree with each other)
@@ -328,7 +384,7 @@ export function segments(track, secPerFrame, frameSec, { minFrames = 6, tol = .7
   // a real note's frames agree with their own period (clarity .9 and up); a ringing chord tail or two overlapping
   // notes score .7 to .85. ponytail: fixed floors, from the fixtures and two sung takes
   return out
-    .map((s) => ({ t: s.start * secPerFrame + frameSec / 4, end: s.end, midi: Math.round(s.sum / s.n), clarity: s.clarity }))
+    .map((s) => ({ t: s.start * secPerFrame + frameSec / 4, end: s.end, midi: Math.round([...s.vals].sort((a, b) => a - b)[s.vals.length >> 1]), clarity: s.clarity }))
     .filter((s) => s.clarity >= minClarity && (s.clarity >= minClarity + .1 || s.end - s.t >= .15));
 }
 
@@ -346,6 +402,26 @@ export function chooseBpm(events, tempo, fallback = 120) {
   return { bpm: pick.bpm, guessed: false };
 }
 
+/**
+ * The bar a beat repeats at, within ±8% of four beats at `bpm`: the lag where the onset envelope's normalised
+ * autocorrelation peaks, when that peak is inside the window and at least `BAR_MIN` (1 is an exact repeat). A
+ * beatboxer keeps a figure, and its length is the bar they hear, where the beat alone cannot tell a bar of 4 beats
+ * from one of 4.3 (the user's take: a 2.21 s figure read as 2.06 s bars, so no two bars came out alike). Returns
+ * the bpm whose bar is that length, or `bpm` unchanged.
+ */
+export function barBpm(env, hps, bpm) {
+  const n = env.length; let mean = 0; for (const v of env) mean += v; mean /= n;
+  const e = Float32Array.from(env, (v) => v - mean); let r0 = 0; for (const v of e) r0 += v * v;
+  const bar = (240 / bpm) * hps, lo = Math.round(bar * .92), hi = Math.min(n >> 1, Math.round(bar * 1.08));
+  if (!r0 || hi - lo < 3) return bpm;
+  const r = []; for (let lag = lo; lag <= hi; lag++) { let acc = 0; for (let i = 0; i + lag < n; i++) acc += e[i] * e[i + lag]; r.push(acc / r0 / (1 - lag / n)); }
+  let k = 0; r.forEach((v, i) => { if (v > r[k]) k = i; });
+  return k > 0 && k < r.length - 1 && r[k] >= BAR_MIN ? Math.round(((240 * hps) / (lo + k)) * 10) / 10 : bpm;
+}
+const BAR_MIN = .2; // ponytail: how clear the repeat must be; the user's beatbox take .30, the synthetic kits .6..7
+
+const DIP = .5; // a repeated note's level falls to under this share of the next attack's in the 100 ms before it. ponytail: from a sweep on HumTrans
+
 /** The pattern a 16 kHz buffer sounds like. `events` are the notes and hits (seconds, midi or null); `code` is Strudel. With a `catalogue` (sounds.json's sounds) each drum voice plays the nearest real sample instead of a synth; with `instruments` (sounds.json's instruments) the notes play the nearest instrument instead of a triangle. */
 export function transcribe(data, rate = RATE, { fallbackBpm = 120, catalogue = null, instruments = null, bpm: fixedBpm = null } = {}) {
   const strength = onsetStrength(data, rate), { env, rms, hop, hps } = strength;
@@ -356,10 +432,13 @@ export function transcribe(data, rate = RATE, { fallbackBpm = 120, catalogue = n
   // notes come from the pitch track (a voice slurs: no onset, just a new pitch); onsets add what it cannot see:
   // the same note struck again, and unpitched hits. An onset near a segment start also fixes its time (it is sharper).
   let events = segs.map((s) => ({ t: s.t, end: s.end, midi: s.midi }));
+  const level = (t) => { const i = Math.round((t * rate) / hop); let m = 0; for (let k = i; k < Math.min(rms.length, i + 20); k++) m = Math.max(m, rms[k]); return m; };
+  const dipBefore = (t) => { const i = Math.round((t * rate) / hop); let lo = Infinity; for (let k = Math.max(0, i - 20); k < i; k++) lo = Math.min(lo, rms[k]); return lo < DIP * level(t); };
   for (const t of onsets) {
     const near = events.find((e) => e.midi != null && Math.abs(e.t - t) < .08);
     if (near) { near.t = t; continue; }
     const inside = segs.find((s) => t >= s.t - .05 && t < s.end);
+    if (inside && !dipBefore(t)) continue; // the same note struck again dips first; a swell inside a held note is not a new note (a tenth of HumTrans's extra notes)
     events.push({ t, end: inside ? inside.end : t, midi: inside ? inside.midi : null });
   }
   events.sort((a, b) => a.t - b.t);
@@ -368,8 +447,15 @@ export function transcribe(data, rate = RATE, { fallbackBpm = 120, catalogue = n
   // a melody is a take whose time is mostly pitched. Counting onsets misjudged a singer with hard consonants (two
   // bursts per note, and the take became a "beat" with drum lines made of consonants and a rigid grid)
   const span = events.length > 1 ? events[events.length - 1].t - events[0].t : 0;
-  const melodic = span > 0 && segs.reduce((s, x) => s + (x.end - x.t), 0) / span > .4;
-  const level = (t) => { const i = Math.round((t * rate) / hop); let m = 0; for (let k = i; k < Math.min(rms.length, i + 20); k++) m = Math.max(m, rms[k]); return m; };
+  // the pitch the track holds right after an onset (30..180 ms): 8 of 15 frames within ±.75 semitone of their median (one wild frame at a consonant does not spoil it), the median
+  const pitchedAfter = (t) => { const i0 = Math.round(((t + .03) * rate) / phop), vals = track.slice(i0, i0 + 15).filter((v) => v != null).sort((a, b) => a - b), m = vals[vals.length >> 1]; return vals.filter((v) => Math.abs(v - m) <= .75).length >= 8 ? Math.round(m) : null; };
+  // a melody: more than 40% of the span is in notes, or more than half the onsets start a pitch and the raw track is
+  // clearly voiced (clarity .9+) for 38% of the span. Sung syllables with hard consonants are too short and bent for
+  // the segmenter (a take of them came out as cowbells): the raw track still has them (.42 of the span on that take,
+  // .48 on a hummed tune). A beatboxer who hums the kicks also starts a pitch at most onsets, but the clear share
+  // stays under .35 (AVP: .16..34), except for two of 56 who hum long tones. ponytail: thin margin, from those takes
+  const clearShare = (() => { const a = Math.round((events[0]?.t ?? 0) * rate / phop), b = Math.round((events[events.length - 1]?.t ?? 0) * rate / phop) + 1; let c = 0; for (let i = a; i < b; i++) if (track[i] != null && clarity[i] >= .9) c++; return b > a ? c / (b - a) : 0; })();
+  const melodic = span > 0 && (segs.reduce((s, x) => s + (x.end - x.t), 0) / span > .4 || (onsets.filter((t) => pitchedAfter(t) != null).length > onsets.length / 2 && clearShare >= .38));
   if (melodic) {
     // an unpitched onset in a melody is one of: the consonant of the note that follows within .4 s (the last burst
     // of a run-up is the note's start, the earlier ones go), a note the segmenter lost under the previous note's
@@ -386,8 +472,8 @@ export function transcribe(data, rate = RATE, { fallbackBpm = 120, catalogue = n
       // a consonant runs into its vowel (the level between them stays at 4..74% of the burst on two singers' takes); a hit before a note decays to nothing first
       const continuous = (a, b) => { let min = Infinity; for (let k = Math.round(((a + .02) * rate) / hop); k < Math.round((b * rate) / hop); k++) min = Math.min(min, rms[k]); return min >= .03 * level(a); };
       if (next && next.t - e.t < .4 && continuous(e.t, next.t)) { if (!events.slice(i + 1).some((x) => x.midi == null && x.t < next.t)) next.t = e.t; continue; }
-      const i0 = Math.round(((e.t + .03) * rate) / phop), vals = track.slice(i0, i0 + 15).filter((v) => v != null).sort((a, b) => a - b);
-      if (vals.length >= 8 && vals[vals.length - 1] - vals[0] <= 1.5) { fixed.push({ t: e.t, end: e.t + .15, midi: Math.round(vals[vals.length >> 1]) }); continue; }
+      const p = pitchedAfter(e.t);
+      if (p != null) { fixed.push({ t: e.t, end: e.t + .15, midi: p }); continue; }
       if (level(e.t) >= .8 * noteLevel) fixed.push(e);
     }
     events = fixed;
@@ -397,12 +483,13 @@ export function transcribe(data, rate = RATE, { fallbackBpm = 120, catalogue = n
     const pitched = events.filter((e) => e.midi != null);
     for (const e of events) if (e.midi != null && (e.end - e.t < .12 || pitched.length * 6 < events.length)) e.midi = null;
   }
-  classifyHits(events, data, rate);
-  if (catalogue) matchSounds(events, data, rate, catalogue);
+  classifyHits(events, data, rate, catalogue);
+  if (catalogue) matchSounds(events, catalogue);
   const hist = new Array(12).fill(0);
   for (const e of events) if (e.midi != null) hist[e.midi % 12]++;
   const key = hist.some(Boolean) ? detectKey(hist) : null;
-  const { bpm, guessed } = fixedBpm ? { bpm: fixedBpm, guessed: false } : chooseBpm(events, tempo, fallbackBpm); // a later track keeps the first one's tempo so the grids line up
+  let { bpm, guessed } = fixedBpm ? { bpm: fixedBpm, guessed: false } : chooseBpm(events, tempo, fallbackBpm); // a later track keeps the first one's tempo so the grids line up
+  if (!fixedBpm && !guessed && !melodic) bpm = barBpm(env, hps, bpm); // a beat's bar is the figure it repeats
   const instrument = instruments ? matchInstrument(events, data, rate, instruments) : null;
   const parts = toParts(events, bpm, key, guessed ? ' (no steady beat heard, assumed)' : '', melodic, instrument && { name: instrument, offset: instruments[instrument].offset || 0 });
   return { bpm, tempo, key, events, melodic, instrument, parts, code: assemble([parts], bpm) };

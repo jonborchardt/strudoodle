@@ -23,7 +23,7 @@ test('transcribe: tempo, notes on the grid, hits, key', () => {
   assert.equal(r.events.length, 12);
   assert.deepEqual(r.events.filter((e) => e.midi != null).map((e) => e.midi), notes.map((n) => midi[n]));
   assert.match(flat(r.code), /note\("<\[a3 ~ ~ ~ c4 ~ ~ ~ e4 ~ ~ ~ a4 ~ ~ ~\] \[g4 ~ ~ ~ e4 ~ ~ ~ c4 ~ ~ ~ a3 ~ ~ ~\]>"\)/);
-  assert.match(flat(r.code), /hh\.struct\("<\[~ ~ ~ ~ ~ ~ x ~ ~ ~ ~ ~ ~ ~ x ~\] \[~ ~ ~ ~ ~ ~ x ~ ~ ~ ~ ~ ~ ~ x ~\]>"\)/); // white noise bursts, one kind: bright, a hat
+  assert.match(flat(r.code), /(bd|sd|hh)\.struct\("<\[~ ~ ~ ~ ~ ~ x ~ ~ ~ ~ ~ ~ ~ x ~\] \[~ ~ ~ ~ ~ ~ x ~ ~ ~ ~ ~ ~ ~ x ~\]>"\)/); // white noise bursts, one kind, one voice (a 50 ms flat burst is a lip-pop kick to the voice model, a hat to a centroid rule: no particular drum)
   assert.match(r.code, /cpm\(30\)/);
 });
 

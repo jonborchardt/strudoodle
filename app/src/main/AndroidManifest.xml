@@ -3,6 +3,8 @@
 
     <!-- Only for strudel's samples(...) sample packs, streamed from the Strudel CDN. The hello-world synth pattern is offline. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- the page's buzz when a new A/B test lands (android.vibrate) -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Listen: the page's getUserMedia, granted through WebChromeClient.onPermissionRequest. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- WebView's getUserMedia fails with "Could not start audio source" without this one too. Normal permission, no prompt. -->

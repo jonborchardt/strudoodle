@@ -9,8 +9,11 @@ import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.util.Base64
 import android.util.Log
+import android.view.WindowManager
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
@@ -45,6 +48,11 @@ class MainActivity : Activity() {
             webViewClient = object : WebViewClient() {
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
                     assets.shouldInterceptRequest(request.url)
+                // Any other site (strudel.cc for a shared pattern) opens in the browser, not over the app's page.
+                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                    if (request.url.host == "appassets.androidplatform.net") return false
+                    startActivity(Intent(Intent.ACTION_VIEW, request.url)); return true
+                }
             }
             webChromeClient = object : WebChromeClient() {
                 // Everything the page logs (strudel's own errors included) lands in logcat under one tag.
@@ -91,6 +99,14 @@ class MainActivity : Activity() {
         @JavascriptInterface fun log(line: String) {
             Log.i(TAG, line)
             file.appendText(line + "\n")
+        }
+        /** A buzz of `ms` (the page's own navigator.vibrate is refused before the user has tapped). */
+        @JavascriptInterface fun vibrate(ms: Int) {
+            getSystemService(Vibrator::class.java).vibrate(VibrationEffect.createOneShot(ms.toLong(), VibrationEffect.DEFAULT_AMPLITUDE))
+        }
+        /** Keep the screen on (a take in progress) or let it sleep again. */
+        @JavascriptInterface fun awake(on: Boolean) = runOnUiThread {
+            if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
         /** The last take as a WAV, base64 from the page: files/<name>. Pull with `adb exec-out run-as <pkg> cat files/take.wav`. */
         @JavascriptInterface fun save(name: String, base64: String) {

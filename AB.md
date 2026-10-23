@@ -8,32 +8,32 @@ Ideas, ordered by value: how much it helps "hum it, get a pattern" per line of c
 |---|------|---|---|--------|
 | 1 | count-in before a take | record at once | four clicks first, tempo locked to them | A (no count-in) |
 | 5 | solo / mute per track | — | a button per track | B (icons: 🔊/🔇 mute, 🎧 solo) |
-| 6 | re-record a track in place | — | long-press × to replace | testing |
-| 7 | undo last remove | — | an "undo" link in the status line | |
-| 8 | session survives relaunch | — | tracks kept in localStorage | |
-| 9 | copy pattern to clipboard | — | a Copy button | |
-| 10 | open in strudel.cc | — | a Share button with the pattern in the URL | |
-| 11 | waveform strip of the take | — | canvas with onset ticks under the tracks | |
-| 12 | piano-roll strip | — | notes over time, one row per track | |
-| 13 | tempo override box | — | editable bpm next to the tracks | |
-| 14 | half / double tempo | — | two buttons | |
+| 6 | re-record a track in place | — | long-press × to replace | B (a 🎤 button, not a long-press; × now asks to confirm) |
+| 7 | undo last remove | — | an "undo" link in the status line | skipped (× confirms) |
+| 8 | session survives relaunch | — | tracks kept in localStorage | B |
+| 9 | copy pattern to clipboard | — | a Copy button | B (in the pattern box's corner; selects the text it copies) |
+| 10 | open in strudel.cc | — | a Share button with the pattern in the URL | B (strudel.cc ↗ in the pattern box's corner, opens the browser) |
+| 11 | waveform strip of the take | — | canvas with onset ticks under the tracks | B |
+| 12 | piano-roll strip | — | notes over time, one row per track | B (drawn on the waveform strip) |
+| 13 | tempo override box | — | editable bpm next to the tracks | B (in a track's ✎ edit panel, with its waveform) |
+| 14 | half / double tempo | — | two buttons | skipped (the tempo box covers it) |
 | 15 | snap sung pitches to the key | as sung | nearest scale note | |
-| 16 | octave shift per track | — | ± buttons | |
+| 16 | octave shift per track | — | ± buttons | B (in the ✎ panel) |
 | 17 | transpose the stack | — | ± semitone buttons | |
-| 18 | instrument picker per track | auto | a select over MELODY_POOL | |
-| 19 | drum kit picker | auto | a select over the machines | |
+| 18 | instrument picker per track | auto | a select over MELODY_POOL | B (in the ✎ panel) |
+| 19 | drum kit picker | auto | a select over the machines | B (in the ✎ panel) |
 | 20 | quantise grid picker | 16ths | 8ths / 16ths / triplets | |
-| 21 | live mic meter while recording | — | a bar in the status line | |
-| 22 | keep screen on while recording | — | wake lock | |
-| 23 | haptic count-in | audible clicks | vibration (silent for the mic) | |
-| 24 | visual beat flash while recording | — | background pulses on the beat | |
-| 25 | record cap setting | 60 s | 15 / 30 / 60 / 120 | |
-| 26 | auto-stop on silence | — | stop after 2 s of quiet | |
-| 27 | play the raw take back | — | a ▶ per track for its wav | |
+| 21 | live mic meter while recording | — | a bar in the status line | B (under the status line, −60..0 dB, red when clipping) |
+| 22 | keep screen on while recording | — | wake lock | B (FLAG_KEEP_SCREEN_ON through the bridge) |
+| 23 | haptic count-in | audible clicks | vibration (silent for the mic) | skipped (no count-in, #1) |
+| 24 | visual beat flash while recording | — | background pulses on the beat | A |
+| 25 | record cap setting | 60 s | 15 / 30 / 60 / 120 | A |
+| 26 | auto-stop on silence | — | stop after 2 s of quiet | A |
+| 27 | play the raw take back | — | a ▶ per track for its wav | B (takes of this launch) |
 | 28 | per-note confidence | — | dim the uncertain notes in the pattern | |
-| 29 | "heard as" summary per track | head comment only | melody/beat · key · bpm · instrument chips | |
-| 30 | re-transcribe a take with current code | — | a button, for tuning on the phone | |
-| 31 | pattern history | — | last ten patterns, back/forward | |
+| 29 | "heard as" summary per track | head comment only | melody/beat · key · bpm · instrument chips | B |
+| 30 | re-transcribe a take with current code | — | a button, for tuning on the phone | skipped (an install relaunches the app, so the raw takes are gone) |
+| 31 | pattern history | — | last ten patterns, back/forward | B (this launch) |
 | 32 | loop length | 1 bar | 1 / 2 / 4 bars per cycle | |
 | 33 | multi-bar takes | one bar | `<bar1 bar2>` for long takes | |
 | 34 | fold repeated phrases | — | a repeated bar becomes `*2` | |
@@ -41,13 +41,13 @@ Ideas, ordered by value: how much it helps "hum it, get a pattern" per line of c
 | 36 | beatbox mode | — | pitch ignored | |
 | 37 | room-noise profile | — | three seconds of silence subtracted | |
 | 38 | input gain boost | — | ×2 / ×4 for quiet singers | |
-| 39 | clipping / too-quiet warning | — | status line after each take | |
-| 40 | headphone detection | always muted while recording | playback stays on with headphones | |
-| 41 | overdub with headphones | — | hear the stack while taking the next track | |
-| 42 | big recording indicator | button colour | a red dot and the elapsed bars | |
+| 39 | clipping / too-quiet warning | — | status line after each take | B |
+| 40 | headphone detection | always muted while recording | playback stays on with headphones | A (tested with #41) |
+| 41 | overdub with headphones | — | hear the stack while taking the next track | A |
+| 42 | big recording indicator | button colour | a red dot and the elapsed bars | B (bars once a track sets the tempo, seconds before; covers #99) |
 | 43 | trim silence | onsets only | leading/trailing silence dropped from the take | |
-| 44 | master volume slider | — | `.gain` on the stack | |
-| 45 | per-track volume | — | `.gain` per line | |
+| 44 | master volume slider | — | `.gain` on the stack | A |
+| 45 | per-track volume | — | `.gain` per line | A (testing paused after this one) |
 | 46 | swing slider | — | `.swing` | |
 | 47 | humanize toggle | — | small random timing | |
 | 48 | room slider | dry | `.room` | |
@@ -101,5 +101,6 @@ Ideas, ordered by value: how much it helps "hum it, get a pattern" per line of c
 | 96 | share the A/B verdict in-app | log input | two thumbs on the A/B row | |
 | 97 | about screen | — | version + licence | |
 | 98 | pattern length in bars shown | — | in the track row | |
-| 99 | elapsed bars while recording | seconds | bars at the locked tempo | |
+| 99 | elapsed bars while recording | seconds | bars at the locked tempo | B (with #42) |
 | 100 | notification play/stop | — | media controls while backgrounded | |
+| 101 | transcriber (from the transcription session) | old transcriber | new: onset picker, drift-tolerant grid, trained kick/snare/hat, lead-in click removal, legato lengths | B |
