@@ -110,6 +110,14 @@ Every change was kept only if the number it targets moved and the 13 round-trip 
     .16..34, two of 56 above). That take: 22 notes and one stray hit, was 16 notes and three drum lines. HumTrans
     edit distance .303 → .290, rhythm .755 → .767; beat corpus unchanged.
 
+11. **Scoops** (`segments`): the user slides into each note (1.5 semitones over 150..300 ms) and the ±.75-semitone
+    running-mean rule wrote every note twice, a semitone apart. Two contiguous segments within two semitones are now
+    one note when the piece before is short (under 120 ms: a lead-in, not a held note) or the boundary is a slow glide
+    (no per-frame step over .25 and under .6 semitones across 80 ms: a legato step is smeared over YIN's frame but
+    still adds up to the step); the note's pitch is the median, which the scoop does not pull down. A jump-only
+    segmenter was tried first and over-merged legato hums (HumTrans .290 → .313, two fixtures lost notes). Kept
+    version: HumTrans .290 → **.283**, rhythm .767 → .792, fixtures 13/13, beat corpus unchanged.
+
 ### Numbers, before and after
 
 | measure | before | after |
@@ -117,15 +125,28 @@ Every change was kept only if the number it targets moved and the 13 round-trip 
 | AVP improvisations: onset F1 (±50 ms, end to end) | .868 | .926 |
 | AVP improvisations: drum voice as named | .567 | .724 |
 | AVP: onset timing error, mean absolute | 30 ms | 7 ms |
-| HumTrans: pitch-sequence edit distance per note | .340 | .290 |
-| HumTrans: of 1063 notes right / one semitone off / extra / missed | | 827 / 108 / 86 / 40 (before the syllable work) |
-| HumTrans: rhythm agreement of aligned gaps | (.733 as powers of two) | .767 |
+| HumTrans: pitch-sequence edit distance per note | .340 | .283 |
+| HumTrans: of 1063 notes right / one semitone off / extra / missed | | 827 / 108 / 86 / 40 (before the syllable and scoop work) |
+| HumTrans: rhythm agreement of aligned gaps | (.733 as powers of two) | .792 |
 | round-trip fixtures | 13/13 | 13/13 |
 | node, 60 s take | | 1.3 s |
 
 What the takes look like now: the beatbox is 18 events (the eye counts 16) in two voices with a repeating figure;
 `run4` is ten notes and no drum lines; the slow scale is `[e2@6 g2@6 a2@4] [~ ~ ~ ~ a#2@6 ~ ~ c#3@4] …` at 117
 bpm (the doubled tempo is the nearest-113 rule; the sung lengths are right).
+
+## What is still weak, and the way to tune it
+
+The corpora are strangers: smooth hummers and 28 beatboxers. The user sings short syllables with hard consonants
+and scoops, and beatboxes with long "pssh" sounds; neither corpus has that, and three of today's fixes came from
+reading the user's own takes by spectrogram with no ground truth. The tuning loop that would actually converge:
+a take plus one typed line of what it was (a tune name, note names, "boots and cats 4 bars"), saved as
+`takes/<name>.json` in the same format as the corpus, and `node scripts/eval.mjs takes` scoring the user's own voice.
+Open questions only that loop can answer: whether a repeated pitch across a level dip is two syllables or one
+scooped note, where the user feels "one" in a beatbox bar, and whether snare and hat come out right for this voice.
+Tempo presentation is a separate, product-level choice: a sung melody often fits both 92 and 185 bpm and the finer
+grid wins the fit (`chooseBpm`), which reads as 16ths with rests where 8ths would do; A/B idea 14 (half / double
+buttons) is the honest fix.
 
 ## Known limits, on purpose
 

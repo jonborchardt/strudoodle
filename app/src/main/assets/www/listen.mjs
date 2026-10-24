@@ -359,18 +359,17 @@ export function pitchTrack(data, rate, { hopMs = 10, floor = .005 } = {}) {
  * are absorbed. Times in seconds: `t` the segment's first frame plus a quarter frame (a frame straddling two notes
  * already reads the new one once it is half in), `end` where it stopped.
  */
+const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s[s.length >> 1]; };
+const GLIDE = .25; // semitones per 10 ms frame: under it a pitch change is a scoop inside a note. ponytail: from the user's takes (scoops .05/frame) against HumTrans legato steps
 export function segments(track, secPerFrame, frameSec, { minFrames = 6, tol = .75, clarity = null, minClarity = .8 } = {}) {
   const out = [];
   let cur = null, pending = [];
   const close = (i) => { if (cur) { cur.end = i * secPerFrame; cur.clarity = clarity ? Array.from({ length: i - cur.start }, (_, k) => clarity[cur.start + k] || 0).reduce((a, b) => a + b, 0) / (i - cur.start) : 1; out.push(cur); } cur = null; };
   const open = (i, vals) => { cur = { start: i, vals: [...vals] }; };
-  // a frame continues the note when it sits within `tol` of the last three frames, not of the note's mean: a singer
-  // scoops into a note over 300 ms (1.5 semitones on the user's takes) and the mean rule wrote every note twice; a
-  // new note is a jump. The note's pitch is then the median, which the scoop does not pull down
-  const recent = () => { const v = cur.vals.slice(-3); return v.reduce((a, b) => a + b, 0) / v.length; };
+  const avg = () => cur.vals.reduce((a, b) => a + b, 0) / cur.vals.length;
   for (let i = 0; i <= track.length; i++) {
     const v = track[i] ?? null;
-    if (v != null && cur && Math.abs(v - recent()) <= tol) { cur.vals.push(v); pending = []; continue; }
+    if (v != null && cur && Math.abs(v - avg()) <= tol) { cur.vals.push(v); pending = []; continue; }
     pending.push(v);
     if (pending.length < minFrames && i < track.length) continue;
     // minFrames of something else: silence, a new note, or noise (frames that do not agree with each other)
@@ -381,10 +380,23 @@ export function segments(track, secPerFrame, frameSec, { minFrames = 6, tol = .7
     if (agree && vals.length) open(at, vals);
     pending = [];
   }
+  // a singer scoops into a note (1.5 semitones over 300 ms on the user's takes) and the mean rule above cuts the
+  // scoop off as a note of its own: two contiguous segments within two semitones whose boundary is a slow glide (no
+  // frame-to-frame step over `GLIDE` in the 100 ms around it) are one note. A sung legato step is a quick glide.
+  for (let k = 1; k < out.length;) {
+    const a = out[k - 1], b = out[k], at = b.start, aEnd = a.start + a.vals.length;
+    let slow = at - aEnd <= 10 && Math.abs(median(a.vals) - median(b.vals)) <= 2; // up to 100 ms of in-between frames, voiced and gliding slowly
+    for (let i = Math.max(a.start + 1, aEnd - 3); slow && i < Math.min(at + 5, b.start + b.vals.length); i++) if (track[i] == null || track[i - 1] == null || Math.abs(track[i] - track[i - 1]) > GLIDE) slow = false;
+    // a legato step is smeared over YIN's 80 ms frame into small per-frame moves: over 80 ms it still adds up to the step, a scoop to half a semitone
+    if (slow && (track[at - 4] == null || track[at + 4] == null || Math.abs(track[at + 4] - track[at - 4]) > .6)) slow = false;
+    // the user's scoops are as fast as a legato step: what tells them apart is that the piece before the note is short (under 120 ms) and sits within two semitones; a legato step comes off a held note
+    const lead = a.vals.length < 12 && at - aEnd <= 10 && Math.abs(median(a.vals) - median(b.vals)) <= 2;
+    if (slow || lead) { a.vals = track.slice(a.start, b.start + b.vals.length).map((v) => v ?? median(a.vals)); a.end = b.end; a.clarity = (a.clarity + b.clarity) / 2; out.splice(k, 1); } else k++;
+  }
   // a real note's frames agree with their own period (clarity .9 and up); a ringing chord tail or two overlapping
   // notes score .7 to .85. ponytail: fixed floors, from the fixtures and two sung takes
   return out
-    .map((s) => ({ t: s.start * secPerFrame + frameSec / 4, end: s.end, midi: Math.round([...s.vals].sort((a, b) => a - b)[s.vals.length >> 1]), clarity: s.clarity }))
+    .map((s) => ({ t: s.start * secPerFrame + frameSec / 4, end: s.end, midi: Math.round(median(s.vals)), clarity: s.clarity })) // the median: a scoop does not pull the note down
     .filter((s) => s.clarity >= minClarity && (s.clarity >= minClarity + .1 || s.end - s.t >= .15));
 }
 
